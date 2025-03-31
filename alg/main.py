@@ -46,7 +46,9 @@ class Alg(QCAlgorithm):
                 bar.High,
                 bar.Low,
                 bar.Close,
-                bar.Volume
+                bar.Volume,
+                self.ema10.Current.Value,
+                self.ema30.Current.Value
             ))
         
         # Skip if we're still in the warm-up period
@@ -96,13 +98,13 @@ class Alg(QCAlgorithm):
         with open(filename, "w", newline="") as f:
             writer = csv.writer(f)
             # Header
-            writer.writerow(["time", "open", "high", "low", "close", "volume"])
+            writer.writerow(["time", "open", "high", "low", "close", "volume", "ema10", "ema30"])
             # Data rows
             for row in self.price_data:
                 # row[0] is a DateTime; convert it to ISO string or just str(row[0])
                 writer.writerow([
                     row[0].strftime("%Y-%m-%d %H:%M:%S"),
-                    row[1], row[2], row[3], row[4], row[5]
+                    row[1], row[2], row[3], row[4], row[5], row[6], row[7]
                 ])
 
         self.Debug(f"Wrote {len(self.price_data)} bars to {filename}")
