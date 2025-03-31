@@ -1,0 +1,8 @@
+__pycache__/*
+alg/__pycache__/*
+.dgtrader-venv/*
+alg/backtests/*
+data/*
+.ipynb_checkpoints/*
+.env
+.DS_Store
