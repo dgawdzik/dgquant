@@ -1,6 +1,4 @@
 {
-    "engine-image": "quantconnect/lean:17034",
-    "research-image": "quantconnect/research:17034",
     "data-folder": "data",
     "log-handler": "QuantConnect.Logging.CompositeLogHandler",
     "messaging-handler": "QuantConnect.Messaging.Messaging",

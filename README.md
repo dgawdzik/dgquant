@@ -79,6 +79,21 @@ source .env
 
 The notebooks can be run from VSCode by selecting the environment's kernel.
 
+# Lean CLI
+
+[Lean CLI](https://github.com/QuantConnect/lean-cli) is installed and maintained separately from [Lean Engine](https://github.com/QuantConnect/Lean). The CLI uses `engine-image` and `research-image` element key to specify which docker image of [Lean Engine](https://github.com/QuantConnect/Lean) is used for running backtest, live trading, or running Juniper Notebook server. The configuration can be displayed by running command:
+
+```zsh
+lean config list
+```
+
+The configuration is stored in globally in user folder under `~/.lean/config`. It can be intially set by the following:
+
+```zsh
+lean config set engine-image quantconnect/lean:17034
+lean config set research-image quantconnect/research:17034
+```
+
 # Development
 
 The VSCode uses Conda package manager to install needed libraries but the development and backtests run against the docker container. The VSCode intellisense support is provided by

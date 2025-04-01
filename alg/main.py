@@ -27,8 +27,11 @@ class Alg(QCAlgorithm):
         self.is_buying = False
         self.bar_count = 0
         
-        # We'll store bar data (time, open, high, low, close, volume) in a list
+        # We store bar data (time, open, high, low, close, volume) in a list
         self.price_data = []
+        
+        # We store trades in a list for later analysis
+        self.trades = []
     
     def on_data(self, data: Slice):
         """on_data event is the primary entry point for your algorithm. Each new data point will be pumped in here.
@@ -68,16 +71,13 @@ class Alg(QCAlgorithm):
         #     return
         
         holdings = self.Portfolio[self.symbol].quantity
-        
-        # Plot the current EMA values so they get recorded in the backtest results
-        self.plot("EMA Values", "EMA10", self.ema10.Current.Value)
-        self.plot("EMA Values", "EMA30", self.ema30.Current.Value)
 
         # Check for buy signal: EMA10 crosses above EMA30
         if not self.is_buying and self.ema10.current.value > self.ema30.Current.Value and holdings <= 0:           
             if holdings < 0:
                 self.liquidate(self.symbol)
                 self.debug(f"Cover signal: EMA10 ({self.ema10.Current.Value:.2f}) crossed above EMA30 ({self.ema30.Current.Value:.2f})")
+            # Go long
             self.set_holdings(self.symbol, 1)
             self.debug(f"Buy signal: EMA10 ({self.ema10.Current.Value:.2f}) crossed above EMA30 ({self.ema30.Current.Value:.2f})")
             self.is_buying = True
@@ -90,7 +90,28 @@ class Alg(QCAlgorithm):
             self.set_holdings(self.symbol, -1)
             self.debug(f"Sell short signal: EMA10 ({self.ema10.Current.Value:.2f}) crossed below EMA30 ({self.ema30.Current.Value:.2f})")
             self.is_buying = False
-            
+    
+    def on_order_event(self, orderEvent: OrderEvent):
+        if orderEvent.status == OrderStatus.Filled:
+            fill_time = self.Time  # or orderEvent.UtcTime if you want precise fill time
+            fill_price = orderEvent.fill_price
+            fill_quantity = orderEvent.fill_quantity
+            order = str(self.transactions.get_order_by_id(orderEvent.order_id))
+            side = "Buy" if fill_quantity > 0 else "Sell"
+
+            account_balance = self.Portfolio.TotalPortfolioValue
+            self.trades.append((
+                fill_time,
+                orderEvent.Symbol.Value,
+                fill_price,
+                fill_quantity,
+                account_balance,
+                order,
+                side
+            ))
+            self.debug(f"on_order_event >> {orderEvent.Symbol.Value}" +
+                        f" filled {fill_quantity} @ {fill_price} ({str(order)}).")
+
     def on_end_of_algorithm(self):
         self.debug(f"Total number of 1m data points received: {self.bar_count}")
         
@@ -106,7 +127,15 @@ class Alg(QCAlgorithm):
                     row[0].strftime("%Y-%m-%d %H:%M:%S"),
                     row[1], row[2], row[3], row[4], row[5], row[6], row[7]
                 ])
-
-        self.Debug(f"Wrote {len(self.price_data)} bars to {filename}")
+        self.debug(f"Wrote {len(self.price_data)} bars to {filename}")
+        
+        # Write trades data to trades.csv
+        trades_filename = "/Lean/Data/trades.csv"
+        with open(trades_filename, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["time", "symbol", "price", "quantity", "account_balance", "order_type", "side"])
+            for trade in self.trades:
+                writer.writerow(trade)
+        self.debug(f"Wrote {len(self.trades)} trades to {trades_filename}")
         
         return super().on_end_of_algorithm()

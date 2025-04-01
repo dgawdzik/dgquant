@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# ^ Tells the OS to run this file with bash (adjust if you prefer zsh).
+
+# A short description/purpose of this script
+# e.g., automates repeated commands for your dev environment.
+
+# Example command usage:
+#   ./mydevtool.sh <option>
+#
+# Options:
+#   init   : Initialize something (like environment variables, etc.)
+#   build  : Build the project
+#   run    : Run the application
+#   clean  : Clean generated files
+
+# Turn on exit-on-error
+set -e
+
+# Turn on command tracing
+# set -x
+
+# Helper function to show usage
+usage() {
+  echo "Usage: $0 {init|test|run|clean}"
+  exit 1
+}
+
+# If no arguments provided, show usage
+[[ $# -eq 0 ]] && usage
+
+# The first argument is the command
+COMMAND=$1
+shift  # Shifts positional parameters to the left so $2 becomes $1, etc.
+
+case $COMMAND in
+  init)
+    echo \"Initializing environment...\"
+    # Here you might set environment variables, or call other scripts
+    echo \"Not implemented yet\"
+    ;;
+  run)
+    echo \"Not implemented yet\"
+    ;;
+  clean)
+    echo \"Cleaning up backtest folder...\"
+    rm -rf alg/backtests/*
+    ;;
+  *)
+    usage
+    ;;
+esac
