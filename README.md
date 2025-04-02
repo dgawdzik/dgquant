@@ -13,8 +13,9 @@ conda activate ./.dgtrader-venv
 conda config --add channels conda-forge # May not be needed if channel already added
 conda install ipykernel # Needed for Notebook support
 conda env export --no-builds > environment.yml
-pip install quantconnect-stubs # This is needed to get auto-complete working
-pip install quantconnect-lean
+# This is needed to get auto-complete working and needs to be in sync with the Lean engine Docker image
+pip install quantconnect-stubs==17034 
+pip install quantconnect-lean==17034
 ```
 
 The following commands must be run from a Host shell versus Python virtual conda environment:
@@ -103,3 +104,21 @@ pip install quantconnect-stubs # run in the venv
 ```
 
 The [lean/](./lean/) folder contains all the source code for Lean framework and is imported as Git submodule.
+
+The [dev](dev) utility is meant to automate most development tasks and can be invoked from the workspace root folder via command:
+
+```zsh
+dev clean
+```
+
+Currently only `clean` option is supported that removes all backtests from [alg/backtests](alg/backtests/) folder.
+
+The `terminal.integrated.profiles.osx` in [.vscode/settings.json](.vscode/settings.json) is used to add the workspace root folder to `$PATH` so that [dev](dev) script can be executed. 
+
+The [.env](.env) file is to be created with the following OS env variables defined:
+
+```text
+export QUANT_CONNECT_USER_ID=?
+export QUANT_CONNECT_API_TOKEN=?
+export PATH="$PATH:$(pwd)"
+```

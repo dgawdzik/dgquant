@@ -1,4 +1,17 @@
 {
   "python.pythonPath": "/opt/anaconda3/bin/python",
-  "python.languageServer": "Pylance"
+  "python.languageServer": "Pylance",
+  "terminal.integrated.profiles.osx": {
+    "CustomZsh": {
+      "path": "/bin/zsh",
+      // We'll start zsh in interactive mode (-i) and run a command (-c)
+      // that sources the env file, then execs a new interactive zsh
+      "args": [
+        "-i",
+        "-c",
+        "source ${workspaceFolder}/.env; exec zsh -i"
+      ]
+    }
+  },
+  "terminal.integrated.defaultProfile.osx": "CustomZsh"
 }
