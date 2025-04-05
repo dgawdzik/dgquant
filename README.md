@@ -1,3 +1,18 @@
+# Pre-requisites
+
+Install following software and note that dev environment setup was only tested on Mac OS.
+
+- [VSCode IDE](https://code.visualstudio.com/download)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+- [Anaconda](https://www.anaconda.com/download)
+
+# Development Environment Setup
+
+- After cloning the repo, open in VSCode and run command `dev init` to setup Lean Engine, write [.env](.env) file, and add settings to Lean Engine config file [~/.lean/config](~/.lean/config).
+- Activate Python virtual environment `conda activate ./.dgtrader-venv`
+- Test backtest can be run `dev backtest`
+
+
 # Conda Environment
 
 The Conda virtual environment was created using:

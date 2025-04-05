@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 # ^ Tells the OS to run this file with bash (adjust if you prefer zsh).
 
-# A short description/purpose of this script
-# e.g., automates repeated commands for your dev environment.
+# Automates repeated commands for your dev environment.
 
 # Example command usage:
-#   ./mydevtool.sh <option>
+#   dev init 
 #
 # Options:
-#   init   : Initialize something (like environment variables, etc.)
-#   build  : Build the project
-#   run    : Run the application
-#   clean  : Clean generated files
+#   init   : Initialize development environment (like environment variables, etc.)
+#   clean  : Clean back test files
 
 # Turn on exit-on-error
 set -e
@@ -19,10 +16,88 @@ set -e
 # Turn on command tracing
 # set -x
 
+# Define color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color / Reset
+
 # Helper function to show usage
 usage() {
-  echo "Usage: $0 {init|test|run|clean}"
+  echo -e "${GREEN}Usage: $0 {init|backtest|clean}${NC}"
   exit 1
+}
+
+write_env_file_if_not_exists() {
+  local env_file="$1"
+  if [ ! -f "$env_file" ]; then
+    echo -e "${GREEN}Creating $env_file ...${NC}"
+    touch "$env_file"
+    echo 'export PATH="$PATH:$(pwd)"' >> "$env_file"
+    echo "export QUANT_CONNECT_USER_ID=?" >> "$env_file"
+    echo "export QUANT_CONNECT_API_TOKEN=?" >> "$env_file"
+    echo -e "${GREEN}$env_file created successfully.${NC}" 
+  else
+    echo -e "${GREEN}$env_file already exists. Skipping creation.${NC}"
+  fi
+}
+
+# Function to initialize the environment
+init_environment() {
+  echo -e "${GREEN}Initializing environment ...${NC}"
+  eval "$(conda shell.bash hook)"
+
+  if [ -d ".dgtrader-venv" ]; then
+    read -p ".dgtrader-venv virtual env already exists and will be deleted and re-created. Do you want to proceed? (y/n): " choice
+    case "$choice" in
+      y|Y) 
+        echo -e "${GREEN}Proceeding with initialization ...${NC}"
+        echo -e "${GREEN}Deleting existing virtual environment ...${NC}"
+        conda remove -p ./.dgtrader-venv --all -y
+        ;;
+      n|N) 
+        echo -e "${GREEN}Initialization aborted.${NC}"; 
+        exit 0
+        ;;
+      *) 
+        echo -e "${GREEN}Invalid choice. Initialization aborted.${NC}"; 
+        exit 1
+        ;;
+    esac
+  fi
+
+  write_env_file_if_not_exists ".env"
+
+  echo -e "${GREEN}Creating virtual Python environment ./.dgtrader-venv ...${NC}"
+  conda create --prefix ./.dgtrader-venv python=3.10 -y
+  
+  echo -e "${GREEN}Initializing Conda ...${NC}"
+  conda init
+  
+  echo -e "${GREEN}Activating virtual environment to install packages from ./environment.yml ...${NC}"
+  conda activate ./.dgtrader-venv
+  
+  echo -e "${GREEN}Installing Lean CLI ...${NC}"
+  pip install lean
+
+  echo -e "${GREEN}Setting Lean Engine configuration file to ensure consistent version of Lean engine and project type definition package see ~/.lean/config${NC}"
+  lean config set engine-image quantconnect/lean:17034
+  lean config set research-image quantconnect/research:17034
+  
+  echo ""
+  echo -e "${BLUE}Run Conda activate ./.dgtrader-venv to activate the virtual environment${NC}"; 
+  echo -e "${BLUE}If new .env file was created make sure to set environmental variables for Quant Connect auth${NC}"
+   
+}
+
+# Function to clean up generated files
+clean_backtest_files() {
+  echo -e "${GREEN}Cleaning up backtest folder ...${NC}"
+  rm -rf alg/backtests/*
+}
+
+backtest() {
+  lean backtest alg
 }
 
 # If no arguments provided, show usage
@@ -34,16 +109,13 @@ shift  # Shifts positional parameters to the left so $2 becomes $1, etc.
 
 case $COMMAND in
   init)
-    echo \"Initializing environment...\"
-    # Here you might set environment variables, or call other scripts
-    echo \"Not implemented yet\"
-    ;;
-  run)
-    echo \"Not implemented yet\"
+    init_environment
     ;;
   clean)
-    echo \"Cleaning up backtest folder...\"
-    rm -rf alg/backtests/*
+    clean_backtest_files
+    ;;
+  backtest)
+    backtest
     ;;
   *)
     usage

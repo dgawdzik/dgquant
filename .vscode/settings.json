@@ -6,11 +6,7 @@
       "path": "/bin/zsh",
       // We'll start zsh in interactive mode (-i) and run a command (-c)
       // that sources the env file, then execs a new interactive zsh
-      "args": [
-        "-i",
-        "-c",
-        "source ${workspaceFolder}/.env; exec zsh -i"
-      ]
+      "args": ["-i", "-c", "source ${workspaceFolder}/.env; exec zsh -i"]
     }
   },
   "terminal.integrated.defaultProfile.osx": "CustomZsh"
