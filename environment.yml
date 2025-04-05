@@ -1,4 +1,4 @@
-name: /Users/dgawdzik/Develop/dgtrader/.dgtrader-venv
+name: .dgtrader-venv
 channels:
   - conda-forge
   - https://conda.anaconda.org/conda-forge
@@ -83,4 +83,4 @@ dependencies:
       - quantconnect-lean==0.1.0
       - quantconnect-stubs==17034
       - tzdata==2025.2
-prefix: /Users/dgawdzik/Develop/dgtrader/.dgtrader-venv
+prefix: .dgtrader-venv
