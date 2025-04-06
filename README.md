@@ -8,9 +8,9 @@ Install following software and note that dev environment setup was only tested o
 
 # Development Environment Setup
 
-- After cloning the repo, open in VSCode and run command `dev init` to setup Lean Engine, write [.env](.env) file, and add settings to Lean Engine config file [~/.lean/config](~/.lean/config).
+- After cloning the repo, open in VSCode and run command `./dev init` to setup Lean Engine, write [.env](.env) file, and add settings to Lean Engine config file [~/.lean/config](~/.lean/config).
 - Activate Python virtual environment `conda activate ./.dgtrader-venv`
-- Test backtest can be run `dev backtest`
+- Now you should be able to issue command `dev backtest` and can run `dev` CLI without the `./`.
 
 
 # Conda Environment
@@ -31,14 +31,6 @@ conda env export --no-builds > environment.yml
 # This is needed to get auto-complete working and needs to be in sync with the Lean engine Docker image
 pip install quantconnect-stubs==17034 
 pip install quantconnect-lean==17034
-```
-
-The following commands must be run from a Host shell versus Python virtual conda environment:
-
-```zsh
-lean init
-lean create-project alg
-lean backtest alg
 ```
 
 You can remove the environment by
@@ -103,7 +95,7 @@ The notebooks can be run from VSCode by selecting the environment's kernel.
 lean config list
 ```
 
-The configuration is stored in globally in user folder under `~/.lean/config`. It can be intially set by the following:
+The configuration is stored in globally in user folder under `~/.lean/config`. It can be initially set by the following:
 
 ```zsh
 lean config set engine-image quantconnect/lean:17034

@@ -69,7 +69,7 @@ init_environment() {
   write_env_file_if_not_exists ".env"
 
   echo -e "${GREEN}Creating virtual Python environment ./.dgtrader-venv ...${NC}"
-  conda create --prefix ./.dgtrader-venv python=3.10 -y
+  conda env create -f environment.yml -p ./.dgtrader-venv
   
   echo -e "${GREEN}Initializing Conda ...${NC}"
   conda init
@@ -85,7 +85,7 @@ init_environment() {
   lean config set research-image quantconnect/research:17034
   
   echo ""
-  echo -e "${BLUE}Run Conda activate ./.dgtrader-venv to activate the virtual environment${NC}"; 
+  echo -e "${BLUE}Run 'conda activate ./.dgtrader-venv' to activate the virtual environment${NC}"; 
   echo -e "${BLUE}If new .env file was created make sure to set environmental variables for Quant Connect auth${NC}"
    
 }
