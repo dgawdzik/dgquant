@@ -6,9 +6,9 @@ import csv
 class Alg(QCAlgorithm):
 
     def initialize(self):
-        self.set_start_date(2014, 6, 5)  # Set Start Date
-        self.set_end_date(2014, 6, 5)  # Set End Date
-        self.set_cash(100000)  # Set Strategy Cash
+        self.set_start_date(2025, 4, 11)  # Set Start Date
+        self.set_end_date(2025, 4, 12)  # Set End Date
+        self.set_cash(10000)  # Set Strategy Cash
         
         # Market hours filter - using milliseconds since midnight in EST timezone
         # 9:30 AM EST = 9 hours * 60 min * 60 sec * 1000 ms + 30 min * 60 sec * 1000 ms = 34,200,000 ms
@@ -16,7 +16,7 @@ class Alg(QCAlgorithm):
         self.market_open_milliseconds = 34200000   # 9:30 AM EST in milliseconds
         self.market_close_milliseconds = 57600000  # 4:00 PM EST in milliseconds
                 
-        self.symbol = self.add_equity("AAPL", Resolution.MINUTE, data_normalization_mode=DataNormalizationMode.Raw).Symbol
+        self.symbol = self.add_equity("NVDA", Resolution.MINUTE, data_normalization_mode=DataNormalizationMode.Raw).Symbol
         
         # Add EMA indicators
         self.ema10 = self.ema(self.symbol, 10, Resolution.MINUTE)

@@ -1,5 +1,6 @@
 {
   "python.pythonPath": "/opt/anaconda3/bin/python",
+  "python.envFile": "${workspaceFolder}/.envpy",
   "python.languageServer": "Pylance",
   "terminal.integrated.profiles.osx": {
     "CustomZsh": {
