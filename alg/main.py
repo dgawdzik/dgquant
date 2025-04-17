@@ -30,11 +30,11 @@ class Alg(QCAlgorithm):
             ).Symbol
         
         # Add EMA indicators
-        self.ema10 = self.ema(self.symbol, 10, Resolution.MINUTE)
-        self.ema30 = self.ema(self.symbol, 30, Resolution.MINUTE)
+        self.ema10 = self.ema(self.symbol, 23, Resolution.MINUTE)
+        self.ema30 = self.ema(self.symbol, 50, Resolution.MINUTE)
         
         # Ensure indicators are warmed up before trading
-        self.set_warm_up(31)
+        self.set_warm_up(50)
         self.is_buying = False
         self.bar_count = 0
         
