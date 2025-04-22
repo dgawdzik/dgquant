@@ -129,3 +129,13 @@ export QUANT_CONNECT_USER_ID=?
 export QUANT_CONNECT_API_TOKEN=?
 export PATH="$PATH:$(pwd)"
 ```
+
+# Debug
+
+Run backtest with debug option from VSCode terminal:
+
+```zsh
+lean backtest alg  --debug debugpy
+```
+
+Then to debug tab in VSCode and press on the debug green arrow button.

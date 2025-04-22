@@ -4,7 +4,11 @@ import csv
 # endregion
 
 class Alg(QCAlgorithm):
-
+    
+    FAST_EMA_PERIOD: int = 23
+    SLOW_EMA_PERIOD: int = 50
+    SYMBOL: str = "NVDA"
+    
     def initialize(self):
         self.set_start_date(2025, 4, 16)  # Set Start Date
         self.set_end_date(2025, 4, 16)  # Set End Date
@@ -20,7 +24,7 @@ class Alg(QCAlgorithm):
         self.market_close_milliseconds = 57600000  # 4:00 PM EST in milliseconds
                 
         self.symbol = self.add_equity(
-            ticker = "NVDA",
+            ticker = Alg.SYMBOL,
             resolution = Resolution.MINUTE,
             market = Market.USA,
             fill_forward = True,
@@ -28,13 +32,13 @@ class Alg(QCAlgorithm):
             extended_market_hours = True, 
             data_normalization_mode = DataNormalizationMode.Raw
             ).Symbol
-        
+    
         # Add EMA indicators
-        self.ema10 = self.ema(self.symbol, 23, Resolution.MINUTE)
-        self.ema30 = self.ema(self.symbol, 50, Resolution.MINUTE)
+        self.ema_fast = self.ema(self.symbol, Alg.FAST_EMA_PERIOD, Resolution.MINUTE)
+        self.ema_slow = self.ema(self.symbol, Alg.SLOW_EMA_PERIOD, Resolution.MINUTE)
         
         # Ensure indicators are warmed up before trading
-        self.set_warm_up(50)
+        self.set_warm_up(Alg.SLOW_EMA_PERIOD)
         self.is_buying = False
         self.bar_count = 0
         
@@ -43,6 +47,7 @@ class Alg(QCAlgorithm):
         
         # We store trades in a list for later analysis
         self.trades = []
+        self.prev_ema_diff = 0
     
     def on_data(self, data: Slice):
         """on_data event is the primary entry point for your algorithm. Each new data point will be pumped in here.
@@ -61,16 +66,23 @@ class Alg(QCAlgorithm):
                 bar.Low,
                 bar.Close,
                 bar.Volume,
-                self.ema10.Current.Value,
-                self.ema30.Current.Value
+                self.ema_fast.Current.Value,
+                self.ema_slow.Current.Value
             ))
         
         # Skip if we're still in the warm-up period
         if self.is_warming_up:
             return
-            
+        
+        curr_ema_diff = self.ema_fast.Current.Value - self.ema_slow.Current.Value
+        is_crossing = (self.prev_ema_diff < 0 and curr_ema_diff >= 0) or (self.prev_ema_diff > 0 and curr_ema_diff <= 0)
+        self.prev_ema_diff = curr_ema_diff
+        
         # Skip if our symbol isn't in the data
-        if not self.symbol in data:
+        if not self.symbol in data or not is_crossing:
+            self.debug(f"Skipping trading logic, symbol {self.symbol} not in data or no crossing detected.")
+            self.debug(f"Current EMA Fast: {self.ema_fast.Current.Value}, EMA Slow: {self.ema_slow.Current.Value}")
+            self.debug(f"Previous EMA Diff: {self.prev_ema_diff}, Current EMA Diff: {curr_ema_diff}")
             return
         
         # Get current time in milliseconds since midnight in EST
@@ -83,23 +95,24 @@ class Alg(QCAlgorithm):
         
         holdings = self.Portfolio[self.symbol].quantity
 
-        # Check for buy signal: EMA10 crosses above EMA30
-        if not self.is_buying and self.ema10.current.value > self.ema30.Current.Value and holdings <= 0:           
+        # Check for buy signal: fast EMA crosses above slow EMA
+        if curr_ema_diff > 0:
             if holdings < 0:
                 self.liquidate(self.symbol)
-                self.debug(f"Cover signal: EMA10 ({self.ema10.Current.Value:.2f}) crossed above EMA30 ({self.ema30.Current.Value:.2f})")
+                self.debug(f"Cover signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed above slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
             # Go long
             self.set_holdings(self.symbol, 1)
-            self.debug(f"Buy signal: EMA10 ({self.ema10.Current.Value:.2f}) crossed above EMA30 ({self.ema30.Current.Value:.2f})")
+            self.debug(f"Buy signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed above slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
             self.is_buying = True
 
-        # Check for sell signal: EMA10 crosses below EMA30
-        elif self.is_buying and self.ema10.Current.Value < self.ema30.Current.Value and holdings > 0:
-            self.liquidate(self.symbol)
-            self.debug(f"Sell signal: EMA10 ({self.ema10.Current.Value:.2f}) crossed below EMA30 ({self.ema30.Current.Value:.2f})")
+        # Check for sell signal: fast EMA crosses below slow EMA
+        else:
+            if holdings > 0:
+                self.liquidate(self.symbol)
+                self.debug(f"Sell signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed below slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
             # sell short
             self.set_holdings(self.symbol, -1)
-            self.debug(f"Sell short signal: EMA10 ({self.ema10.Current.Value:.2f}) crossed below EMA30 ({self.ema30.Current.Value:.2f})")
+            self.debug(f"Sell short signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed below slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
             self.is_buying = False
     
     def on_order_event(self, orderEvent: OrderEvent):
@@ -130,7 +143,7 @@ class Alg(QCAlgorithm):
         with open(filename, "w", newline="") as f:
             writer = csv.writer(f)
             # Header
-            writer.writerow(["time", "open", "high", "low", "close", "volume", "ema10", "ema30"])
+            writer.writerow(["time", "open", "high", "low", "close", "volume", "ema_fast", "ema_slow"])
             # Data rows
             for row in self.price_data:
                 # row[0] is a DateTime; convert it to ISO string or just str(row[0])
