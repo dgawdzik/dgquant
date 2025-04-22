@@ -78,42 +78,44 @@ class Alg(QCAlgorithm):
         is_crossing = (self.prev_ema_diff < 0 and curr_ema_diff >= 0) or (self.prev_ema_diff > 0 and curr_ema_diff <= 0)
         self.prev_ema_diff = curr_ema_diff
         
-        # Skip if our symbol isn't in the data
-        if not self.symbol in data or not is_crossing:
-            self.debug(f"Skipping trading logic, symbol {self.symbol} not in data or no crossing detected.")
-            self.debug(f"Current EMA Fast: {self.ema_fast.Current.Value}, EMA Slow: {self.ema_slow.Current.Value}")
-            self.debug(f"Previous EMA Diff: {self.prev_ema_diff}, Current EMA Diff: {curr_ema_diff}")
-            return
-        
-        # Get current time in milliseconds since midnight in EST
-        # current_time = self.Time.time()
-        # current_milliseconds = (current_time.hour * 3600 + current_time.minute * 60 + current_time.second) * 1000
-        
-        # # Skip if outside regular market hours
-        # if current_milliseconds < self.market_open_milliseconds or current_milliseconds > self.market_close_milliseconds:
-        #     return
-        
-        holdings = self.Portfolio[self.symbol].quantity
-
-        # Check for buy signal: fast EMA crosses above slow EMA
-        if curr_ema_diff > 0:
-            if holdings < 0:
-                self.liquidate(self.symbol)
-                self.debug(f"Cover signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed above slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
-            # Go long
-            self.set_holdings(self.symbol, 1)
-            self.debug(f"Buy signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed above slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
-            self.is_buying = True
-
-        # Check for sell signal: fast EMA crosses below slow EMA
+        if not self.symbol in data:
+            # Skip if our symbol isn't in the data
+            self.debug(f"Skipping trading logic, symbol [{self.symbol}] not in data or no crossing detected")
+        elif not is_crossing:
+            # Skip trading logic if no crossing of fast and slow EMA detected
+            self.debug(f"Skipping trading logic no crossing of fast and slow EMA detected.")
+            self.debug(f"Current Fast EMA_{Alg.FAST_EMA_PERIOD}: [{self.ema_fast.Current.Value}], slow EMA_{Alg.SLOW_EMA_PERIOD}: [{self.ema_slow.Current.Value}]")
+            self.debug(f"Previous EMA diff: [{self.prev_ema_diff}], Current EMA diff: [{curr_ema_diff}]")
         else:
-            if holdings > 0:
-                self.liquidate(self.symbol)
-                self.debug(f"Sell signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed below slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
-            # sell short
-            self.set_holdings(self.symbol, -1)
-            self.debug(f"Sell short signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed below slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
-            self.is_buying = False
+            # Get current time in milliseconds since midnight in EST
+            # current_time = self.Time.time()
+            # current_milliseconds = (current_time.hour * 3600 + current_time.minute * 60 + current_time.second) * 1000
+            
+            # # Skip if outside regular market hours
+            # if current_milliseconds < self.market_open_milliseconds or current_milliseconds > self.market_close_milliseconds:
+            #     return
+            
+            holdings = self.portfolio[self.symbol].quantity
+
+            if curr_ema_diff > 0:
+                # Buy signal: fast EMA crosses above slow EMA
+                if holdings < 0:
+                    self.liquidate(self.symbol)
+                    self.debug(f"Cover signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed above slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
+                # Go long
+                self.set_holdings(self.symbol, 1)
+                self.debug(f"Buy signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed above slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
+                self.is_buying = True
+
+            else:
+                # Sell signal: fast EMA crosses below slow EMA
+                if holdings > 0:
+                    self.liquidate(self.symbol)
+                    self.debug(f"Sell signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed below slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
+                # sell short
+                self.set_holdings(self.symbol, -1)
+                self.debug(f"Sell short signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed below slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
+                self.is_buying = False
     
     def on_order_event(self, orderEvent: OrderEvent):
         if orderEvent.status == OrderStatus.Filled:

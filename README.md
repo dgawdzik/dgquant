@@ -135,7 +135,7 @@ export PATH="$PATH:$(pwd)"
 Run backtest with debug option from VSCode terminal:
 
 ```zsh
-lean backtest alg  --debug debugpy
+deb debug
 ```
 
-Then to debug tab in VSCode and press on the debug green arrow button.
+Then go to debug tab in VSCode and press on the debug green arrow button.

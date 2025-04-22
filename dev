@@ -24,7 +24,7 @@ NC='\033[0m' # No Color / Reset
 
 # Helper function to show usage
 usage() {
-  echo -e "${GREEN}Usage: $0 {init|backtest|clean}${NC}"
+  echo -e "${GREEN}Usage: $0 {init|backtest|debug|clean}${NC}"
   exit 1
 }
 
@@ -100,6 +100,11 @@ backtest() {
   lean backtest alg
 }
 
+debug() {
+  echo -e "${GREEN}Go to debug tab in VSCode, select Debug with Lean CLI profile, and press on green arrow button to run debugger${NC}" 
+  lean backtest alg  --debug debugpy
+}
+
 # If no arguments provided, show usage
 [[ $# -eq 0 ]] && usage
 
@@ -116,6 +121,9 @@ case $COMMAND in
     ;;
   backtest)
     backtest
+    ;;
+  debug)
+    debug
     ;;
   *)
     usage
