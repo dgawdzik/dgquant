@@ -30,7 +30,7 @@ class Alg(QCAlgorithm):
             fill_forward = True,
             leverage = 4,
             extended_market_hours = True, 
-            data_normalization_mode = DataNormalizationMode.Raw
+            data_normalization_mode = DataNormalizationMode.RAW
             ).Symbol
     
         # Add EMA indicators
@@ -39,7 +39,6 @@ class Alg(QCAlgorithm):
         
         # Ensure indicators are warmed up before trading
         self.set_warm_up(Alg.SLOW_EMA_PERIOD)
-        self.is_buying = False
         self.bar_count = 0
         
         # We store bar data (time, open, high, low, close, volume) in a list
@@ -105,7 +104,6 @@ class Alg(QCAlgorithm):
                 # Go long
                 self.set_holdings(self.symbol, 1)
                 self.debug(f"Buy signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed above slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
-                self.is_buying = True
 
             else:
                 # Sell signal: fast EMA crosses below slow EMA
@@ -115,7 +113,6 @@ class Alg(QCAlgorithm):
                 # sell short
                 self.set_holdings(self.symbol, -1)
                 self.debug(f"Sell short signal: fast EMA_{Alg.FAST_EMA_PERIOD} ({self.ema_fast.Current.Value:.2f}) crossed below slow EMA_{Alg.SLOW_EMA_PERIOD} ({self.ema_slow.Current.Value:.2f})")
-                self.is_buying = False
     
     def on_order_event(self, orderEvent: OrderEvent):
         if orderEvent.status == OrderStatus.Filled:

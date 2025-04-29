@@ -1,0 +1,1037 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Bruz.io
+
+//@version=6
+indicator("Camarilla Pivots & BBT Plays", overlay = true, max_boxes_count = 100, max_lines_count = 100)
+
+// ╔───────────────────────────────────────────────────────────────────────────────────╗
+// │                                                                                   │
+// │ __/\\\\\\\\\\\\\______/\\\\\\\\\______/\\\________/\\\__/\\\\\\\\\\\\\\\_         │
+// │  _\/\\\/////////\\\__/\\\///////\\\___\/\\\_______\/\\\_\////////////\\\__        │
+// │   _\/\\\_______\/\\\_\/\\\_____\/\\\___\/\\\_______\/\\\___________/\\\/___       │
+// │    _\/\\\\\\\\\\\\\\__\/\\\\\\\\\\\/____\/\\\_______\/\\\_________/\\\/_____      │
+// │     _\/\\\/////////\\\_\/\\\//////\\\____\/\\\_______\/\\\_______/\\\/_______     │
+// │      _\/\\\_______\/\\\_\/\\\____\//\\\___\/\\\_______\/\\\_____/\\\/_________    │
+// │       _\/\\\_______\/\\\_\/\\\_____\//\\\__\//\\\______/\\\____/\\\/___________   │
+// │        _\/\\\\\\\\\\\\\/__\/\\\______\//\\\__\///\\\\\\\\\/____/\\\\\\\\\\\\\\\_  │
+// │         _\/////////////____\///________\///_____\/////////_____\///////////////__ │
+// │                                                                                   │
+// ╚───────────────────────────────────────────────────────────────────────────────────╝
+
+// ---- Enums and UDTs
+//#region ---- Enums
+
+//@enum             Two day Camarilla range relationshop
+//@field higher     Yesterday's range is higher than 2 day's ago
+//@field lower      Yesterday's range is lower than 2 day's ago
+//@field neutral    Yesterday's and 2 day's ago ranges are the same within a configurable tolerance
+enum CamRange
+    higher = "Higher Range"
+    lower = "Lower Range"
+    neutral = "Neutral Range"
+
+//@enum             Controls how the Cams are calculate
+//@field auto       Automically decides whether to use ETH or not depending on whether ETH range is witint RTH range
+//@field forceRTH   Only use RTH close, high, low to calculate Cams
+//@field forceETH   Always use ETH close, high, low to calculate Cams
+enum CalcMode
+    auto = "Auto"
+    forceRTH = "Force RTH Data"
+    forceETH = "Force ETH Data"
+
+//@enum             Strategy direction
+//@field long       Strategy with a long entry
+//@field short      Strategy with a short entry
+enum Direction
+    long
+    short
+
+//@enum         Option for specifying which strategies to use in a neutral range
+//@field lower  Use "L" strategies
+//@field higher Use "H" strategies
+//@field both   Use both "L" and "H" strategies
+enum NeutralRangeStrategies
+    none = "None"
+    lower = "Lower Range"
+    higher = "Higher Range"    
+    both = "Both"
+
+//@enum         Option for specifying how to behave with strategies in the pre-market
+//@field none   Don't evaluation strategies
+//@field keep   Evaluate and keep any activated strategies active when the regular market starts
+//@field reset  Evaluaye strategies in the premarket but reset them when the regular market starts
+enum PremarketStrategies
+    none = "None"
+    keep = "Keep"
+    reset = "Reset"
+
+//#endregion
+//#region ---- UDTs
+
+//@enum     Holds strategy state variables between bars. Just using vars in the script logic would have caused a huge number of variables across the 12 strategies
+//@fields   Too many to explain
+type StrategyState
+    string description    
+    Direction direction
+    CamRange validRange
+    bool entryGate
+    float entryLineVal    
+    float entryOuterVal
+    box entryBox
+    line entryLine            
+    bool exitSuccessGate    
+    bool exitFailGate
+    float exitLineVal    
+    float exitOuterVal
+    box exitBox
+    line exitLine    
+    
+//@enum             Container for handles to a line and a label
+//@field h_line     Line handle
+//@field h_label    Line handle
+type ExtLine
+    line h_line
+    label h_label
+
+//#endregion
+
+// ---- Constants
+//#region ---- Constants
+
+const bool DEBUG_MODE = false
+const array<string> CAM_LEVELS = array.from("R3", "R4", "R6", "S3", "S4", "S6")
+const array<string> STRATEGIES = array.from("HA", "HB", "HC", "HD", "HE", "HF", "LA", "LB", "LC", "LD", "LE", "LF")
+const int EQUITIES_MIN_PER_DAY_ETH = 960
+const int FUTURES_MIN_PER_DAY_ETH = 1380
+
+//#endregion
+
+// ---- Inputs
+//#region ---- Inputs 
+
+// Options affecting display
+int numDays = input.int(5, "Number of days to show", 0, 20, group = "Display options")
+bool showCP = input.bool(false, "Show Central Pivot (CP)", tooltip = "Show the Central Pivot, which is either RTH close or ETH close from the previous day, depending on which data was in use on that day.", group = "Display options")
+bool lineJoin = input.bool(false, "Join lines between days", tooltip = "Connects the pivot lines across daily boundaries.", group = "Display options")
+bool hideInfoTable = input.bool(false, "Hide information table", tooltip = "Hides the top-right information information table showing where ETH is in use, range, value relationship and currently active play.", group = "Display options")
+bool extendLines = input.bool(false, "Extend Lines", tooltip = "Extend the pivot lines right for the current day.", group = "Display options")
+int labelOffset = input.int(20, "Label offset", tooltip = "Number of bars into the future that the labels are shown. Prevents overlaps with other indicator labels.", display = display.all - display.status_line, group = "Display options")
+color supportColour = input.color(color.green, "Support colour", inline = "colours", group = "Display options")
+color resistanceColour = input.color(color.red, "Resistance colour", inline = "colours", group = "Display options")
+color cpColour = input.color(color.blue, "Central pivot colour", inline = "colours", group = "Display options")
+bool showOther = input.bool(false, "Show other pivots", tooltip = "Normally only one set of (main) pivots is shown, either using RTH or ETH data, which is determined by the calculation mode, and which data is used is displayed in the top-right information table. This option also shows the other set of pivots (using ETH data when the main pivots are using RTH data, and vice versa).", group = "Display options")
+int oLabelOffset = input.int(25, "Other pivots label offset", tooltip = "Number of bars into the future that the labels are shown. Prevents overlaps with other indicator labels.", display = display.all - display.status_line, group = "Display options")
+color oSupportColour = input.color(color.rgb(43, 100, 45), "Other support", inline = "ocolours", group = "Display options")
+color oResistanceColour = input.color(color.rgb(151, 50, 50), "Other resistance ", inline = "ocolours", group = "Display options")
+color oCpColour = input.color(color.rgb(20, 75, 121), "Other central pivot  ", inline = "ocolours", group = "Display options")
+
+
+// Options affecting Cam calculation
+CalcMode calcMode = input.enum(CalcMode.auto, "Calculation mode", tooltip = "Controls whether to always or never use ETH data or whether to handle automatically.", group = "Pivot calculation options")
+bool useRthCloseWithEthData = input.bool(false, "Always use RTH close", tooltip = "Hybrid pivots. In the pivot calculations, use RTH for close, but use ETH for high and low.", group = "Pivot calculation options")
+bool useCurrentPre = input.bool(false, "Use current day premarket data", tooltip = "Use current day premarket data in the pivot calculations. This can cause the pivots to adjust during premarket. Forces use of ETH data.", group = "Pivot calculation options")
+
+// Options affecting strategies
+bool showPastStrategies = input.bool(false, "Show past plays", tooltip = "Show all plays that were activated in the past. When deselected, only the currently active play is shown.", group = "Strategy options")
+bool alwaysShowAllStrategies = input.bool(false, "Always show all plays", tooltip = "Always show higher range and lower range plays irrespective of current range.", group = "Strategy options")
+bool hideStrategyLabel = input.bool(false, "Hide labels on plays", tooltip = "Don't show play labels on the play entry and exit boxes.", group = "Strategy options")
+PremarketStrategies preStrats = input.enum(PremarketStrategies.keep, "Plays when in premarket", tooltip = "'None' prevents play evaluation in the premarket. 'Keep' keeps active plays from premarket after regular market opens. 'Reset' reset active plays at the regular market open.", group = "Strategy options")
+NeutralRangeStrategies neutralStrat = input.enum(NeutralRangeStrategies.both, "Show plays in neutral range", tooltip = "When in a neutral range, controls whether to show higher or lower range plays, neither or both.", group = "Strategy options")
+float strategyBoxTransparency = input.float(60, "Play box transparency %", 0, 100, step = 10, display = display.all - display.status_line, group = "Strategy options")
+
+// Options for weekly/monthly pivots
+bool showWeekly = input.bool(false, "Show weekly pivots                        ", inline = "Show WM", group = "Weekly/Monthly options")
+bool showMonthly = input.bool(false, "Show monthly pivots", inline = "Show WM", group = "Weekly/Monthly options")
+int wLabelOffset = input.int(30, "Weekly label offset", tooltip = "Number of bars into the future that the labels are shown. Prevents overlaps with other indicator labels.", display = display.all - display.status_line, group = "Weekly/Monthly options")
+int mLabelOffset = input.int(40, "Monthly label offset", tooltip = "Number of bars into the future that the labels are shown. Prevents overlaps with other indicator labels.", display = display.all - display.status_line, group = "Weekly/Monthly options")
+color wSupportColour = input.color(color.rgb(108, 175, 147), "Weekly support ", inline = "wcolours", group = "Weekly/Monthly options")
+color wResistanceColour = input.color(color.rgb(248, 130, 130), "Weekly resistance ", inline = "wcolours", group = "Weekly/Monthly options")
+color wCpColour = input.color(color.rgb(119, 185, 240), "Weekly central pivot ", inline = "wcolours", group = "Weekly/Monthly options")
+color mSupportColour = input.color(color.rgb(144, 173, 161), "Monthly support", inline = "mcolours", group = "Weekly/Monthly options")
+color mResistanceColour = input.color(color.rgb(245, 192, 192), "Monthly resistance", inline = "mcolours", group = "Weekly/Monthly options")
+color mCpColour = input.color(color.rgb(176, 209, 236), "Monthly central pivot", inline = "mcolours", group = "Weekly/Monthly options")
+
+
+// Advanced parameters
+bool switchingExcludePreM = input.bool(false, "Exclude current day premarket from ETH switching decision", tooltip = "When set, the current days's premarket highs/lows will excluded from the range used to make the decision whether to use ETH in the current day's calculations. The previous day's regular and post-market ranges are always included. Only has any effect when in auto calculation mode.", group = "Advanced parameters")
+bool switchingIncludeYPreM = input.bool (false, "Include previous day premarket in ETH switching decision", tooltip = "When set, the previous days's premarket high/lows will be included range used to make the decision whether to use ETH in the current day's calculations. The previous day's regular and post-market ranges are always included. Only has any effect when in auto calculation mode.", display = display.all - display.status_line, group = "Advanced parameters")
+float camRangeThresholdPercentage = input.float(0.5, "Neutral range threshold %", 0, 100, step = 0.1, tooltip = "If the difference of yesterday's and 2-days ago close is within this percentage, the range is considered to be neutral. Only affects pivot calculation mode, not the lines themselves.", display = display.all - display.status_line, group = "Advanced parameters")
+float valueRelationTheshold = input.float(10, "Similar value relationship threshold %", 0, 100, tooltip = "Specifies the threshold percentage which decides whether there a similar value relationship between the pivots on the current and previous days. The percentage appplies to the difference between the S3-R3 range. Only affects what's shown in the top-right information table.", display = display.all - display.status_line, group = "Advanced parameters" )
+float switchingTolerance = input.float (0.1, "ETH switching tolerance %", 0, 100, step = 0.1, tooltip = "Controls the tolerance before switching from RTH to ETH data in automatic mode. It represents the percentage of the RTH high/low that the ETH high/low must exceed before switching from RTH data to ETH data. Useful not being affected by minor differences between H/L data on an intra-day timeframe and daily timeframe.", display = display.all - display.status_line, group = "Advanced parameters")
+int strategySensitivity = input.int(6, "Strategy sensitivity", 1, 10, tooltip = "A strategy sensitivity parameter (1-10) which affects the play detection algorithm. The higher the number, the keener it is to trigger a play and more reluctant to exit. It is timeframe-dependant. The recommended (default) value is 6.", display = display.all - display.status_line, group = "Advanced parameters")
+string futureRegSess = input.session("0830-1500", "Futures regular session", tooltip = "Futures only. Specify pseudo-regular session times for futures in the exchange timezone (ES/NQ in on Central Time which is why default 08:30-15:00). This is where the most volume is. For example, despite ES and NQ on CME being traded 23 hours per day during the week (17:00 till 16:00 the next day, Sunday afternoon to Friday afternoon, Central Time), most of the trading activity happens between 08:30 and 15:00 Central Time. Before this (from 17:00 the previous day) we call it pseudo-premarket, after this (until 16:00) we call is pseudo-postmarket ", display = display.all - display.status_line, group = "Advanced parameters")
+
+
+//#endregion
+
+// ---- Functions
+//#region ---- Functions
+
+//@function             Utility function for debug logging.
+//@param logCondition   Expression evaluation to a bool to allow control on which bar the debug function creates output. Setting to true will produce a message on every bar.
+//@param message        The string to log
+//@returns              Nothing
+//Dependancy            Global const bool DEBUG_MODE controlling whether this produces any log output
+debug(bool logCondition, string message) =>
+    if DEBUG_MODE and logCondition        
+        log.info(message)        
+
+//@function     Calculate Camarilla pivot points. Only calculates 3, 4 and 6 since these are the only relevant ones in the BBT system
+//@param h      Daily high
+//@param l      Daily Low
+//@param c      Daily Close
+//@returns      A map of the cams
+calculateCams(float h, float l, float c) =>            
+    map<string,float> camMap = map.new<string,float>()
+    camMap.put("R3", c + (h - l) * 1.1 / 4)
+    camMap.put("R4", c + (h - l) * 1.1 / 2)
+    camMap.put("R6", c * h / l)
+    camMap.put("S3", c - (h - l) * 1.1 / 4)
+    camMap.put("S4", c - (h - l) * 1.1 / 2)
+    camMap.put("S6", c - (camMap.get("R6") - c))
+    camMap
+
+//@function             Compares 2 closing values to find whether the first is greater than the second within some tolerance determined by a percentage of a base close
+//@param primaryClose   The compared which should be higher for the function to return true
+//@param SecondaryClose The comparing value
+//@param baseClose      The value on which to apply a threshold percentage. Will normally be the primary or secondary close
+//@param threshold      A percentage of the baseClose which specifes the tolerance
+//@returns              A bool indicating the result of the comparison
+compareClose(float primaryClose, float secondaryClose, float baseClose, float threshold) =>
+    primaryClose - secondaryClose > baseClose * threshold / 100
+
+//@function             Get the offset highest value in a series since the bar where the sinceCondition was true
+//@param sinceCondition Boolean which controls how far back to look. It goes back until it reaches a bar where the condition is true
+//@param offset         Gets the value for the bar "offset" bars prior to the found one (the bar or interest)
+//@returns              The highest high on the bar of interest
+getHighestSince(bool sinceCondition, int offset) =>            
+    ta.highest(high, nz(ta.barssince(sinceCondition)) + 1)[offset]
+    
+//@function             Get the offset lowest value in a series since the bar where the sinceCondition was true
+//@param sinceCondition Boolean which controls how far back to look. If goes back until it reaches a bar where the condition is true
+//@param offset         Gets the value for the bar "offset" bars prior to the found one (the bar of interest)
+//@returns              The lowest low on the bar of interest
+getLowestSince(bool sinceCondition, int offset) =>        
+    ta.lowest(low, nz(ta.barssince(sinceCondition)) + 1)[offset]
+
+//@function                 Gets remembered close for the last and second to last bar, and the high and low for the last bar, but only updates its memory on a condition
+//@param HLCondition        Predicate specifying how far back to search for high/low
+//@param updateCondition    Condition specifying when to update memory
+//@param shiftBackCondition Condition which if true should cause the returned values to be shifted back by one remembered value (i.e. the remembered values before the last update)
+//@returns                  A tuple of the desired values
+f_pastData(bool HLCondition, bool updateCondition, bool shiftBackCondition) =>
+    var float close0 = na
+    var float close1 = na
+    var float close2 = na
+    var float high0 = na
+    var float low0 = na
+    var float high1 = na
+    var float low1 = na
+    lastHigh = getHighestSince(HLCondition, 1)
+    lastLow = getLowestSince(HLCondition, 1)
+    if updateCondition
+        close2 := close1
+        close1 := close0
+        close0 := close[1]
+        high1 := high0        
+        high0 := lastHigh        
+        low1 := low0
+        low0 := lastLow
+    if shiftBackCondition
+        [close1, close2, high1, low1]
+    else
+        [close0, close1, high0, low0]    
+
+//@function                 Gets remembered RTH open and the premarket high and low for the current day, but only updates its memory on a condition
+//@param HLCondition        Predicate specifying how far back to search for high/low
+//@param updateCondition    Condition specifying when to update memory
+//@param rthOpenBar         Should be set to true when called on the RTH opening bar
+//@returns                  A tuple of the desired values
+f_currentData(bool HLCondition, bool updateCondition, bool rthOpenBar) =>
+    var float rthOpen = na
+    var float pmOpen = na
+    var float preHigh = na
+    var float preLow = na
+    lastHigh = getHighestSince(HLCondition, 0)
+    lastLow = getLowestSince(HLCondition, 0)
+    pmOpen := HLCondition ? open : pmOpen // Slightly abusing HLCondition here. I just want to save the PM Open, and HLCondition happens to be preStartBar in the function call in the main logic
+    if updateCondition or rthOpenBar
+        rthOpen := rthOpenBar ? open : pmOpen // Use PM Open as a proxy for RTH Open during the pre-market
+        preHigh := rthOpenBar ? preHigh : lastHigh
+        preLow := rthOpenBar ? preLow : lastLow
+    [rthOpen, preHigh, preLow]
+
+//@function                 Gets remembered high and low on the the previous bar since some HLCondition, but only updates its memory on a condition
+//@param HLCondition        Predicate specifying how far back to search for high/low
+//@param updateCondition    Condition specifying when to update memory
+//@returns                  A tuple of the desired values
+f_HLData(bool HLCondition, bool updateCondition) =>    
+    var float remHigh = na
+    var float remLow = na
+    lastHigh = getHighestSince(HLCondition, 1)
+    lastLow = getLowestSince(HLCondition, 1)
+    if updateCondition        
+        remHigh := lastHigh
+        remLow := lastLow
+    [remHigh, remLow]
+
+//@function     Get a previously remembered value and updates its memory at the start of a new day
+//@param value  The value on the previous bar to remember
+//@returns      The remembered value
+yVal(float value) =>
+    var float yValue = na    
+    if timeframe.change("D")
+        yValue := value[1]
+    yValue
+
+//@function         Function to give best text colour given background colour (including transparency assuming a black canvas)
+//@param bgcolour   The background colour of the element on which the text is drawn
+//@returns          White or black,  whichever it the bext text colour
+contrastTextColour(color bgColour) =>
+    alpha = color.t(bgColour) / 100.0
+    r = (1 - alpha) * color.r(bgColour) / 255
+    g = (1 - alpha) * color.g(bgColour) / 255
+    b = (1 - alpha) * color.b(bgColour) / 255
+    lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    lum > 0.5 ? color.rgb(0, 0, 0) : color.white
+
+//@function     Clamp value to minimum or maximum if value is outside those
+//@param value  Value to clamp
+//@param min    The minimum possible value
+//@param max    The maximum possible value
+//@returns      The (possibly clamped) value
+clamp(float value, float min, float max) =>
+    math.min(math.max(value, min), max)
+
+//@function             Calculate number of bars for the rising/falling ta function for strategy sensitivity
+//@param sensitivity    Sensitivity value between 1 and 10
+//@returns              Mappings {sensitivity: return value}: {1:5}, {2:4}, {3:4}, {4:3}, {5:3}, {6:2}, {7:2}, {8:1}, {9:1}, {10:0}
+sensitivityBars(int sensitivity) =>
+    float bars = (5 + (-0.6) * (clamp(sensitivity, 1, 6) - 1)) + (2 + (-0.5) * (clamp(sensitivity, 6, 10) - 6)) - 2
+    int(math.round(bars))
+
+//@function             Calculate ratio between levels for strategy sensitivity
+//@param sensitivity    Sensitivity value between 1 and 10
+//@returns              Mappings {sensitivity: return value}: {1:0.000}, {2:0.040}, {3:0.080}, {4:0.120}, {5:0.160}, {6:0.200}, {7:0.275}, {8:0.350}, {9:0.425}, {10:0.500}
+sensitivityRatio(int sensitivity) =>
+    0.04 * (clamp(sensitivity, 1, 6) - 1) + 0.2 + 0.075 * (clamp(sensitivity, 6, 10) - 6) - 0.2
+
+//#endregion
+
+// ---- Logic
+//#region --- Logic
+
+// Pre-checks
+if syminfo.type != "stock" and syminfo.type != "fund" and syminfo.type != "futures" and syminfo.type != "dr"
+    runtime.error("This indicator only works for stocks, ETFs and futures.")
+
+bool regStartBar = false
+bool preStartBar = false
+bool postStartBar = false
+
+// Mark the first bars of regular hours, premarket and postmarket. This works irrespective of whether the chart displays RTH or ETH
+// bar_index check is needed to force the value to true on the first bar or before a certain period of time to prevent runtime error
+switch
+    syminfo.type == "stock" or syminfo.type == "fund" or syminfo.type == "dr" =>
+        regStartBar := session.ismarket and (session.ispremarket[1] or dayofweek != dayofweek[1]) or bar_index == 0 or bar_index <= last_bar_index - 15000
+        preStartBar := session.ispremarket and dayofweek != dayofweek[1] or bar_index == 0 or bar_index <= last_bar_index - 15000
+        postStartBar := session.ispostmarket and session.ismarket[1] or bar_index == 0 or bar_index <= last_bar_index - 15000
+    syminfo.type == "futures" =>        
+        isInReg = not na(time(timeframe.period, futureRegSess))
+        wasInReg = not na(time(timeframe.period, futureRegSess, 1))
+        regStartBar := isInReg and not wasInReg or bar_index == 0
+        preStartBar := timeframe.change("D") or bar_index == 0 // Happens at 17:00 Chicago time for CME (ES/NQ)
+        postStartBar := wasInReg and not isInReg or bar_index == 0
+    => runtime.error("Panic")
+
+bool isPremarket = switch
+    syminfo.type == "stock" or syminfo.type == "fund" or syminfo.type == "dr" => session.ispremarket
+    syminfo.type == "futures" => ta.barssince(preStartBar) < ta.barssince(regStartBar)
+    =>
+        runtime.error("Unsupported security type")
+        false
+
+bool isPostmarket = switch
+    syminfo.type == "stock" or syminfo.type == "fund" or syminfo.type == "dr" => session.ispostmarket
+    syminfo.type == "futures" => ta.barssince(postStartBar) < ta.barssince(preStartBar)
+    =>
+        runtime.error("Unsupported security type")
+        false
+
+// Calculates bars from days
+simple int numBars = int((numDays + 1) * (syminfo.type == "stock" or syminfo.type == "fund" or syminfo.type == "dr" ? EQUITIES_MIN_PER_DAY_ETH : syminfo.type == "futures" ? FUTURES_MIN_PER_DAY_ETH : 0) / str.tonumber(timeframe.period))
+
+// Basically cripple the intra-day indicator on D/W/M timeframe. Avoids a runtime error.
+if timeframe.isdwm
+    numBars := 1
+    regStartBar := true
+    preStartBar := true
+    postStartBar := true
+         
+// Get ETH-enabled version of current symbol (irrespective of chart settings)
+simple string ethTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.extended)
+
+// Get all the numbers we need
+[yRthClose, yyRthClose, yRthHigh, yRthLow] = request.security(ethTicker, timeframe.period, f_pastData(regStartBar, postStartBar, isPostmarket), calc_bars_count = numBars)
+[yEthClose, yyEthClose, yEthHigh, yEthLow] = request.security(ethTicker, timeframe.period, f_pastData(preStartBar, preStartBar, false), calc_bars_count = numBars)
+[rthOpen, preHigh, preLow] = request.security(ethTicker, timeframe.period, f_currentData(preStartBar, isPremarket, regStartBar), calc_bars_count = numBars)
+[yPostHigh, yPostLow] = request.security(ethTicker, timeframe.period, f_HLData(postStartBar, preStartBar), calc_bars_count = numBars)
+
+[wHigh, wLow, wClose] = request.security(syminfo.tickerid, "W", [high[1], low[1], close[1]], lookahead = barmerge.lookahead_on, calc_bars_count = 2)
+[mHigh, mLow, mClose] = request.security(syminfo.tickerid, "M", [high[1], low[1], close[1]], lookahead = barmerge.lookahead_on, calc_bars_count = 2)
+
+// debug(barstate.islast, "yRthClose: " + str.tostring(yRthClose))
+// debug(barstate.islast, "yyRthClose: " + str.tostring(yyRthClose))
+// debug(barstate.islast, "yRthHigh: " + str.tostring(yRthHigh))
+// debug(barstate.islast, "yRthLow: " + str.tostring(yRthLow))
+// debug(barstate.islast, "yEthClose: " + str.tostring(yEthClose))
+// debug(barstate.islast, "yyEthClose: " + str.tostring(yyEthClose))
+// debug(barstate.islast, "yEthHigh: " + str.tostring(yEthHigh))
+// debug(barstate.islast, "yEthLow: " + str.tostring(yEthLow))
+// debug(barstate.islast, "rthOpen: " + str.tostring(rthOpen))
+// debug(barstate.islast, "preHigh: " + str.tostring(preHigh))
+// debug(barstate.islast, "preLow: " + str.tostring(preLow))
+
+// Set calculation mode
+bool useEthForCams = switch calcMode
+    CalcMode.auto =>
+        math.max(yRthHigh, yPostHigh, not switchingExcludePreM ? preHigh : yRthHigh, switchingIncludeYPreM ? yEthHigh : yRthHigh) > yRthHigh * (1 + switchingTolerance / 100)
+     or math.min(yRthLow,  yPostLow, not switchingExcludePreM ? preLow : yRthLow, switchingIncludeYPreM ? yEthLow : yRthLow) < yRthLow * (1 - switchingTolerance / 100)
+     or useCurrentPre
+     or syminfo.type == "futures"
+    CalcMode.forceETH => true
+    CalcMode.forceRTH => false
+    => 
+        runtime.error("Panic")
+        false
+
+// Determine Cam range
+CamRange camRange = switch
+    compareClose(yRthClose, yyRthClose, yRthClose, camRangeThresholdPercentage) => CamRange.higher
+    compareClose(yyRthClose, yRthClose, yRthClose, camRangeThresholdPercentage) => CamRange.lower
+    => CamRange.neutral
+
+// Calculate Cams
+var map<string,float> camMap = na
+camMap := switch
+    useCurrentPre => calculateCams(math.max(yEthHigh, preHigh), math.min(yEthLow, preLow), useRthCloseWithEthData ? yRthClose : yEthClose)
+    useEthForCams => calculateCams(yEthHigh, yEthLow, useRthCloseWithEthData ? yRthClose : yEthClose)
+    => calculateCams(yRthHigh, yRthLow, yRthClose)
+
+var map<string,float> oCamMap = na
+oCamMap := switch
+    not useEthForCams and useCurrentPre => calculateCams(math.max(yEthHigh, preHigh), math.min(yEthLow, preLow), useRthCloseWithEthData ? yRthClose : yEthClose)
+    not useEthForCams => calculateCams(yEthHigh, yEthLow, useRthCloseWithEthData ? yRthClose : yEthClose)
+    => calculateCams(yRthHigh, yRthLow, yRthClose)
+        
+map<string,float> wCamMap = calculateCams(wHigh, wLow, wClose)
+map<string,float> mCamMap = calculateCams(mHigh, mLow, mClose)
+
+// For convenience in the strategy specifications
+float R3 = camMap.get("R3")
+float R4 = camMap.get("R4")
+float R6 = camMap.get("R6")
+float S3 = camMap.get("S3")
+float S4 = camMap.get("S4")
+float S6 = camMap.get("S6")
+
+// Calculate value relationship
+float yS3 = yVal(S3)
+float yR3 = yVal(R3)
+string valueRelationship = switch
+    R3 - S3 > (yR3 - yS3) * (1 + valueRelationTheshold / 100) => "Wide Range"
+    R3 - S3 < (yR3 - yS3) * (1 - valueRelationTheshold / 100) => "Narrow Range"
+    => "Similar Range"
+
+// Strategies
+//#region ---- Strategies
+
+// Contains state of strategies we need to keep over time (except strategy activation status, see below)
+var const map<string, StrategyState> strategyStateMap = map.new<string, StrategyState>()
+
+// Unfortunately it wasn't possible to put the isActive flag inside the StrategyState UDT. The historyreferencing operator doesn't work properly with map<string, StrategyState> which is used later when visualising strategies (TradingView notified of bug in PineScript execution engine)
+var const map<string, bool> strategyActiveMap = map.new<string, bool>()
+
+// Using var since even though we don't need the values on next execution, it might be an optimisation, since apparently var doesn't automatically retain history (despite being a series)
+var StrategyState strategyState = na
+var bool strategyIsActive = false
+var bool strategyEntry_precondition = false
+var bool strategyEntry_trigger = false
+var bool strategyEntry = false
+var bool strategyExit_success = false
+var bool strategyExit_fail = false
+var bool strategyExit = false
+
+// Initialise strategyStateMap
+if barstate.isfirst
+    for strat in STRATEGIES
+        strategyStateMap.put(strat, StrategyState.new())   
+
+//#region ---- Strategy specifications
+
+// Psuedo-constants related to strategy specifications
+// Following are ratios of distance to next level and distance between levels we're in between (incl. CP/PDC)
+float STRAT_ENTRY_APPROACH_LEVEL = sensitivityRatio(strategySensitivity)
+float STRAT_EXIT_FAIL_GATE_LEVEL = sensitivityRatio(strategySensitivity) * 0.5
+float STRAT_EXIT_FAIL_LEVEL = sensitivityRatio(strategySensitivity) * 1.5
+float STRAT_EXIT_FAIL_TOLERANCE = sensitivityRatio(strategySensitivity)
+
+int STRAT_ENTRY_BARS = sensitivityBars(strategySensitivity)
+bool falling = ta.falling(low, STRAT_ENTRY_BARS == 0 ? 1 : STRAT_ENTRY_BARS) // Must be called on every bar, so can't put into the conditional next. Must be an integer greater than 0, if 0 we will discard it next anyway.
+bool rising = ta.rising(high, STRAT_ENTRY_BARS == 0 ? 1 : STRAT_ENTRY_BARS) // Must be called on every bar, so can't put into the conditional next. Must be an integer greater than 0, if 0 we will discard it next anyway.
+falling := STRAT_ENTRY_BARS == 0 ? true : falling
+rising := STRAT_ENTRY_BARS == 0 ? true : rising
+
+float CP = useEthForCams and not useRthCloseWithEthData ? yEthClose : yRthClose
+string stratSpec = na
+
+// Higher Range, Strategy A
+stratSpec := "HA"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)    
+strategyState.description := "S3 to R3 traversal from inside S3-R3"
+strategyState.direction := Direction.long
+strategyState.validRange := CamRange.higher        
+strategyEntry_precondition := rthOpen > S3 and rthOpen < R3
+strategyEntry_trigger := close > S3 and low < S3 + (CP - S3) * STRAT_ENTRY_APPROACH_LEVEL and not strategyActiveMap.get("HE") and falling
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := high >= R3 
+strategyExit_fail := barstate.isconfirmed and close < S3 - (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyExit := strategyExit_success or strategyExit_fail
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := S3
+strategyState.entryOuterVal := S3 - (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := R3 
+strategyState.exitOuterVal := R3 + (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE        
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+// Higher Range, Strategy B
+stratSpec := "HB"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)
+strategyState.description := "Trending R4 breakup from inside S3-R3"
+strategyState.direction := Direction.long
+strategyState.validRange := CamRange.higher
+strategyEntry_precondition := rthOpen > S3 and rthOpen < R3
+strategyEntry_trigger := barstate.isconfirmed and close > R4 and rising
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := high >= R6
+strategyExit_fail := barstate.isconfirmed and close < R4 - (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE
+strategyExit := strategyExit_success or strategyExit_fail
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := R4
+strategyState.entryOuterVal := R4 - (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := R6 
+strategyState.exitOuterVal := R6 + (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+// // Higher Range, Strategy C
+stratSpec := "HC"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)
+strategyState.description := "Trending R4 breakup from outside R4"
+strategyState.direction := Direction.long
+strategyState.validRange := CamRange.higher
+strategyEntry_precondition := rthOpen > R4 and rthOpen < R6
+strategyEntry_trigger := low < R4 + (R6 - R4) * STRAT_ENTRY_APPROACH_LEVEL and close > R4 and falling
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := high >= R6
+strategyState.exitFailGate := not strategyState.exitFailGate ? high > R6 - (R6 - R4) * STRAT_EXIT_FAIL_GATE_LEVEL : true
+strategyExit_fail := barstate.isconfirmed and (close < R4 - (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE or strategyState.exitFailGate ? close < R6 - (R6 - R4) * STRAT_EXIT_FAIL_LEVEL : false)
+strategyExit := strategyExit_success or strategyExit_fail
+strategyState.exitFailGate := strategyExit ? false : strategyState.exitFailGate
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := R4
+strategyState.entryOuterVal := R4 - (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := R6 
+strategyState.exitOuterVal := R6 + (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+// // Higher Range, Strategy D
+stratSpec := "HD"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)
+strategyState.description := "Counter-trending S4 breakdown from outside S4"
+strategyState.direction := Direction.short
+strategyState.validRange := CamRange.higher
+strategyEntry_precondition := rthOpen < S4 and rthOpen > S6
+strategyEntry_trigger := close < S4 and high > (S4 - (S4 - S6) * STRAT_ENTRY_APPROACH_LEVEL) and rising
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := low <= S6
+strategyExit_fail := barstate.isconfirmed and close > S4 + (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyExit := strategyExit_success or strategyExit_fail
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := S4
+strategyState.entryOuterVal := S4 + (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := S6
+strategyState.exitOuterVal := S6 - (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+// Higher Range, Strategy E
+stratSpec := "HE"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)
+strategyState.description := "R4 extreme reversal from inside R3-S3"
+strategyState.direction := Direction.short
+strategyState.validRange := CamRange.higher
+strategyEntry_precondition := rthOpen > S3 and rthOpen < R3
+strategyEntry_trigger := close < R4 and high > R4 - (R4 - R3) * STRAT_ENTRY_APPROACH_LEVEL and (STRAT_ENTRY_BARS == 0 ? true : not falling)
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := low <= S4 
+strategyExit_fail := barstate.isconfirmed and close > R4 + (R6 - R4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyExit := strategyExit_success or strategyExit_fail
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := R4
+strategyState.entryOuterVal := R4 + (R6 - R4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := S4
+strategyState.exitOuterVal := S4 - (S4 - S6) * STRAT_EXIT_FAIL_TOLERANCE
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+// Higher Range, Strategy F
+stratSpec := "HF"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)
+strategyState.description := "R6 reversal from outside R4"
+strategyState.direction := Direction.short
+strategyState.validRange := CamRange.higher
+strategyEntry_precondition := rthOpen > R4 and rthOpen < R6
+strategyEntry_trigger := close < R6 and high > R6 - (R6 - R4) * STRAT_ENTRY_APPROACH_LEVEL and (STRAT_ENTRY_BARS == 0 ? true : not falling)
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := low <= CP
+strategyExit_fail := barstate.isconfirmed and close > R6 + (R6 - R4) * STRAT_EXIT_FAIL_TOLERANCE //Tolerance as ratio to R6-R4 since no level above R6
+strategyExit := strategyExit_success or strategyExit_fail
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := R6
+strategyState.entryOuterVal := R6 + (R6 - R4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := CP
+strategyState.exitOuterVal := CP - (CP - S3) * STRAT_EXIT_FAIL_TOLERANCE
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+// Lower Range, Strategy A
+stratSpec := "LA"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)
+strategyState.description := "R3 to S3 traversal from inside S3-R3"
+strategyState.direction := Direction.short
+strategyState.validRange := CamRange.lower
+strategyEntry_precondition := rthOpen > S3 and rthOpen < R3
+strategyEntry_trigger := close < R3 and high > R3 - (R3 - CP) * STRAT_ENTRY_APPROACH_LEVEL and not strategyActiveMap.get("LE") and rising
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := low <= S3 
+strategyExit_fail := barstate.isconfirmed and close > R3 + (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE
+strategyExit := strategyExit_success or strategyExit_fail
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := R3
+strategyState.entryOuterVal := R3 + (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := S3 
+strategyState.exitOuterVal := S3 - (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+// Lower Range, Strategy B
+stratSpec := "LB"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)
+strategyState.description := "Trending S4 breakdown from inside S3-R3"
+strategyState.direction := Direction.short
+strategyState.validRange := CamRange.lower
+strategyEntry_precondition := rthOpen > S3 and rthOpen < R3
+strategyEntry_trigger := barstate.isconfirmed and close < S4 and falling
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := low <= S6
+strategyExit_fail := barstate.isconfirmed and close > S4 + (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyExit := strategyExit_success or strategyExit_fail
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := S4
+strategyState.entryOuterVal := S4 + (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := S6 
+strategyState.exitOuterVal := S6 - (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+// Lower Range, Strategy C
+stratSpec := "LC"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)
+strategyState.description := "Trending S4 breakdown from outside S4"
+strategyState.direction := Direction.short
+strategyState.validRange := CamRange.lower
+strategyEntry_precondition := rthOpen < S4 and rthOpen > S6
+strategyEntry_trigger := high > S4 - (S4 - S6) * STRAT_ENTRY_APPROACH_LEVEL and close < S4 and rising
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := low <= S6
+strategyState.exitFailGate := not strategyState.exitFailGate ? low < S6 + (S4 - S6) * STRAT_EXIT_FAIL_GATE_LEVEL : true
+strategyExit_fail := barstate.isconfirmed and (close > S4 + (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE or strategyState.exitFailGate ? close > S6 + (S4 - S6) * STRAT_EXIT_FAIL_LEVEL : false)
+strategyExit := strategyExit_success or strategyExit_fail
+strategyState.exitFailGate := strategyExit ? false : strategyState.exitFailGate
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := S4
+strategyState.entryOuterVal := S4 + (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := S6 
+strategyState.exitOuterVal := S6 - (S3 - S4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+// Lower Range, Strategy D
+stratSpec := "LD"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)
+strategyState.description := "Counter-trending R4 breakup from outside R4"
+strategyState.direction := Direction.long
+strategyState.validRange := CamRange.lower
+strategyEntry_precondition := rthOpen > R4 and rthOpen < R6
+strategyEntry_trigger := close > R4 and low < (R4 + (R6 - R4) * STRAT_ENTRY_APPROACH_LEVEL) and falling
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := high >= R6
+strategyExit_fail := barstate.isconfirmed and close < R4 - (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE
+strategyExit := strategyExit_success or strategyExit_fail
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := R4
+strategyState.entryOuterVal := R4 - (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := R6
+strategyState.exitOuterVal := R6 + (R4 - R3) * STRAT_EXIT_FAIL_TOLERANCE
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+// Lower Range, Strategy E
+stratSpec := "LE"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)
+strategyState.description := "S4 extreme reversal from inside R3-S3"
+strategyState.direction := Direction.long
+strategyState.validRange := CamRange.lower
+strategyEntry_precondition := rthOpen > S3 and rthOpen < R3
+strategyEntry_trigger := close > S4 and low < S4 + (S3 - S4) * STRAT_ENTRY_APPROACH_LEVEL and (STRAT_ENTRY_BARS == 0 ? true : not rising)
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := high >= R4 
+strategyExit_fail := barstate.isconfirmed and close < S4 - (S4 - S6) * STRAT_EXIT_FAIL_TOLERANCE
+strategyExit := strategyExit_success or strategyExit_fail
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := S4
+strategyState.entryOuterVal := S4 - (S4 - S6) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := R4
+strategyState.exitOuterVal := R4 + (R6 - R4) * STRAT_EXIT_FAIL_TOLERANCE
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+// Lower Range, Strategy F
+stratSpec := "LF"
+strategyState := strategyStateMap.get(stratSpec)
+strategyIsActive := strategyActiveMap.get(stratSpec)
+strategyState.description := "S6 reversal from outside S4"
+strategyState.direction := Direction.long
+strategyState.validRange := CamRange.lower
+strategyEntry_precondition := rthOpen < S4 and rthOpen > S6
+strategyEntry_trigger := close > S6 and low < S6 + (S4 - S6) * STRAT_ENTRY_APPROACH_LEVEL and (STRAT_ENTRY_BARS == 0 ? true : not rising)
+strategyEntry := strategyEntry_precondition and strategyEntry_trigger
+strategyExit_success := high >= CP
+strategyExit_fail := barstate.isconfirmed and close < S6 - (S4 - S6) * STRAT_EXIT_FAIL_TOLERANCE //Tolerance as ratio to S4-R6 since no level below S6
+strategyExit := strategyExit_success or strategyExit_fail
+strategyIsActive := strategyEntry == strategyExit ? strategyIsActive : strategyEntry
+strategyState.entryLineVal := S6
+strategyState.entryOuterVal := S6 - (S4 - S6) * STRAT_EXIT_FAIL_TOLERANCE
+strategyState.exitLineVal := CP
+strategyState.exitOuterVal := CP + (R3 - CP) * STRAT_EXIT_FAIL_TOLERANCE
+strategyActiveMap.put(stratSpec, strategyIsActive)
+strategyStateMap.put(stratSpec, strategyState)
+
+//#endregion ---- Strategy specifications
+
+// Reset/disable all strategies when ...
+if   isPostmarket // Disable strategies in the post-market
+  or timeframe.change("D") // Safety net if chart is using RTH and a strategy remained active until the end of the previous day RTH
+  or preStrats == PremarketStrategies.reset and regStartBar and barstate.isnew // Reset strategies when the regular market starts if the relevant user option is set
+  or preStrats == PremarketStrategies.none and isPremarket // Disable strategies in the premarket if the relevant user option is set    
+  or rthOpen > S4 and rthOpen < S3 or rthOpen > R3 and rthOpen < R4 // Invalidates any strategies left over from the premarket if the preconditions are not met after the regular market opens
+    for strat in STRATEGIES
+        strategyActiveMap.put(strat, false)
+        strategyState := strategyStateMap.get(strat)     
+        strategyState.entryGate := false
+        strategyState.exitSuccessGate := false
+        strategyState.exitFailGate := false
+        strategyStateMap.put(strat, strategyState)
+
+//#endregion ---- Strategies
+
+//#endregion ---- Logic
+
+// ---- Visuals
+//#region ---- Visuals
+
+// Plot the Cams
+plot(showCP ? (useEthForCams and not useRthCloseWithEthData ? yEthClose : yRthClose) : na, "CP", color = not lineJoin and timeframe.change("D") ? color.new(cpColour, 100) : cpColour, linewidth = 1, display = display.all - display.status_line)
+plot(R3, "R3", not lineJoin and timeframe.change("D") ? color.new(resistanceColour, 100) : resistanceColour, 3, display = display.all - display.status_line)
+plot(R4, "R4", not lineJoin and timeframe.change("D") ? color.new(resistanceColour, 100) : resistanceColour, 2, display = display.all - display.status_line)
+plot(R6, "R6", not lineJoin and timeframe.change("D") ? color.new(resistanceColour, 100) : resistanceColour, 1, display = display.all - display.status_line)
+plot(S3, "S3", not lineJoin and timeframe.change("D") ? color.new(supportColour, 100) : supportColour, 3, display = display.all - display.status_line)
+plot(S4, "S4", not lineJoin and timeframe.change("D") ? color.new(supportColour, 100) : supportColour, 2, display = display.all - display.status_line)
+plot(S6, "S6", not lineJoin and timeframe.change("D") ? color.new(supportColour, 100) : supportColour, 1, display = display.all - display.status_line)
+
+plot(showOther and showCP ? (useEthForCams and not useRthCloseWithEthData ? yRthClose : yEthClose) : na, "OCP", color = not lineJoin and timeframe.change("D") ? color.new(oCpColour, 100) : oCpColour, linewidth = 1, display = display.all - display.status_line)
+plot(showOther ? oCamMap.get("R3") : na, "OR3", not lineJoin and timeframe.change("D") ? color.new(oResistanceColour, 100) : oResistanceColour, 3, display = display.all - display.status_line)
+plot(showOther ? oCamMap.get("R4") : na, "OR4", not lineJoin and timeframe.change("D") ? color.new(oResistanceColour, 100) : oResistanceColour, 2, display = display.all - display.status_line)
+plot(showOther ? oCamMap.get("R6") : na, "OR6", not lineJoin and timeframe.change("D") ? color.new(oResistanceColour, 100) : oResistanceColour, 1, display = display.all - display.status_line)
+plot(showOther ? oCamMap.get("S3") : na, "OS3", not lineJoin and timeframe.change("D") ? color.new(oSupportColour, 100) : oSupportColour, 3, display = display.all - display.status_line)
+plot(showOther ? oCamMap.get("S4") : na, "OS4", not lineJoin and timeframe.change("D") ? color.new(oSupportColour, 100) : oSupportColour, 2, display = display.all - display.status_line)
+plot(showOther ? oCamMap.get("S6") : na, "OS6", not lineJoin and timeframe.change("D") ? color.new(oSupportColour, 100) : oSupportColour, 1, display = display.all - display.status_line)
+
+bool wPredicate = weekofyear(timenow) == weekofyear and year(timenow) == year
+plot(showWeekly and wPredicate and showCP ? wClose : na, "WCP", color = wCpColour, linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showWeekly and wPredicate ? wCamMap.get("R3") : na, "WR3", color = wResistanceColour, linewidth = 3, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showWeekly and wPredicate ? wCamMap.get("R4") : na, "WR4", color = wResistanceColour, linewidth = 2, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showWeekly and wPredicate ? wCamMap.get("R6") : na, "WR6", color = wResistanceColour, linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showWeekly and wPredicate ? wCamMap.get("S3") : na, "WS3", color = wSupportColour, linewidth = 3, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showWeekly and wPredicate ? wCamMap.get("S4") : na, "WS4", color = wSupportColour, linewidth = 2, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showWeekly and wPredicate ? wCamMap.get("S6") : na, "WS6", color = wSupportColour, linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line)
+
+bool mPredicate = month(timenow) == month and year(timenow) == year
+plot(showMonthly and mPredicate and showCP ? mClose : na, "MCP", color = mCpColour, linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showMonthly and mPredicate ? mCamMap.get("R3") : na, "MR3", color = mResistanceColour, linewidth = 3, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showMonthly and mPredicate ? mCamMap.get("R4") : na, "MR4", color = mResistanceColour, linewidth = 2, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showMonthly and mPredicate ? mCamMap.get("R6") : na, "MR6", color = mResistanceColour, linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showMonthly and mPredicate ? mCamMap.get("S3") : na, "MS3", color = mSupportColour, linewidth = 3, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showMonthly and mPredicate ? mCamMap.get("S4") : na, "MS4", color = mSupportColour, linewidth = 2, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showMonthly and mPredicate ? mCamMap.get("S6") : na, "MS6", color = mSupportColour, linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line)
+//#region ---- Strategy Visuals
+
+// Remember the currently active strategy. If multiple are active at once, this will contain the last activation
+var string activeStrategy = na
+
+// Flag for a strategy event
+bool strategyEvent = false
+
+// Loop over the strategies to draw them
+for strat in STRATEGIES
+
+    // Cripple on D/W/M timeframe
+    if timeframe.isdwm
+        continue
+
+    // On the first bar, strategyActiveMap[1] is na and would cause a runtime error on (strategyActiveMap[1]).get(strat) (used later)
+    if barstate.isfirst
+        continue
+    
+    // Retrieve strategy state
+    strategyState := strategyStateMap.get(strat)
+
+    // Check conditions that should cause skipping processing of a strategy
+    if not alwaysShowAllStrategies
+        if camRange == CamRange.neutral
+            if   neutralStrat == NeutralRangeStrategies.none
+              or neutralStrat == NeutralRangeStrategies.higher and strategyState.validRange != CamRange.higher
+              or neutralStrat == NeutralRangeStrategies.lower and strategyState.validRange != CamRange.lower
+                continue
+        else 
+            if camRange != strategyState.validRange
+                continue
+
+    // Get whether the strategy was active on this bar and the last bar
+    bool isActive = strategyActiveMap.get(strat)
+    bool wasActive = (strategyActiveMap[1]).get(strat)
+
+    // Strategy entry triggered on this bar
+    if isActive and not wasActive                
+
+        [entryColour, exitColour] = switch strategyState.direction
+            Direction.long => [supportColour, resistanceColour]
+            Direction.short => [resistanceColour, supportColour]
+            => [color.white, color.white]
+
+        strategyState.entryLine := line.new(bar_index, strategyState.entryLineVal, bar_index + 1, strategyState.entryLineVal, color = entryColour, width = 3)
+        strategyState.entryBox := box.new(bar_index, strategyState.entryOuterVal, bar_index + 1, strategyState.entryLineVal, border_width = 0, bgcolor = color.new(entryColour, strategyBoxTransparency), text = not hideStrategyLabel ? strat : na, text_size = size.normal, text_color = contrastTextColour(color.new(entryColour, strategyBoxTransparency)))
+        strategyState.exitLine := line.new(bar_index, strategyState.exitLineVal, bar_index + 1, strategyState.exitLineVal, color = exitColour, width = 3)
+        strategyState.exitBox := box.new(bar_index, strategyState.exitOuterVal, bar_index + 1, strategyState.exitLineVal, border_width = 0, bgcolor = color.new(exitColour, strategyBoxTransparency), text = not hideStrategyLabel ? strat : na, text_size = size.normal, text_color = contrastTextColour(color.new(exitColour, strategyBoxTransparency)))        
+        
+        activeStrategy := strat
+        strategyEvent := true
+
+    // Strategy exit triggered on this bar    
+    if not isActive and wasActive
+        // Update the current active strategy in the top-right table
+        activeStrategy := strat == activeStrategy ? na : activeStrategy
+        strategyEvent := true
+
+        // Clear strategy boxes (unless option set)
+        if not showPastStrategies
+            line.delete(strategyState.entryLine)        
+            box.delete(strategyState.entryBox)
+            line.delete(strategyState.exitLine)        
+            box.delete(strategyState.exitBox)
+
+    // While strategy is active    
+    if isActive and wasActive
+        // Extend active strategy boxes and move labels to new center
+        line.set_x2(strategyState.entryLine, bar_index)
+        box.set_right(strategyState.entryBox, bar_index)
+        line.set_x2(strategyState.exitLine, bar_index)        
+        box.set_right(strategyState.exitBox, bar_index)
+        
+        // If multiple strategies were active, one of them exited, activeStrategy was set to an empty string above
+        // However we still have an active strategy, so set activeStrategy to it
+        // This works if there can at most two active stategies (which is true given the current strategy definitions)
+        // If there ever could be more active in parallel, this is will set activeStragegy as the last active one in the STRATEGIES array.
+        if na(activeStrategy)
+            activeStrategy := strat
+        
+    // Save updated strategy state back to map
+    strategyStateMap.put(strat, strategyState)    
+
+//#endregion ---- Strategies Visuals
+
+//#region ---- Extension lines and labels
+
+// Extention line handles
+var map<string, ExtLine> extLineMap = map.new<string, ExtLine>()
+var map<string, ExtLine> oExtLineMap = map.new<string, ExtLine>()
+var map<string, ExtLine> wExtLineMap = map.new<string, ExtLine>()
+var map<string, ExtLine> mExtLineMap = map.new<string, ExtLine>()
+
+if barstate.islast and not timeframe.isdwm
+    for cam in CAM_LEVELS
+
+        // Check whether the extension line/label have already been created.
+        if na(extLineMap.get(cam))
+            
+            // Initialise the extension lines on the last confirmed history bar
+            // This setup used to be done on barstate.islastconfirmedhistory but the line/label handles on the static extLineMap seemed to be getting deleted on Sunday night (at least)
+            ExtLine extLine = ExtLine.new()
+            color colour = switch str.substring(cam, 0, 1)
+                "R" => resistanceColour
+                "S" => supportColour
+                => color.white
+            int linewidth = 4 - int(str.tonumber(str.substring(cam, 1)) / 2)
+            extLine.h_line := line.new(bar_index, camMap.get(cam), bar_index + labelOffset, camMap.get(cam), extend = extendLines ? extend.right : extend.none, color = colour, style = line.style_solid, width = linewidth)
+            extLine.h_label := label.new(bar_index + labelOffset, camMap.get(cam), cam, color = colour, style = label.style_label_left, textcolor = contrastTextColour(colour))
+            extLineMap.put(cam, extLine)
+
+            if showOther
+                ExtLine oExtLine = ExtLine.new()
+                colour := switch str.substring(cam, 0, 1)
+                    "R" => oResistanceColour
+                    "S" => oSupportColour
+                    => color.white
+                linewidth := 4 - int(str.tonumber(str.substring(cam, 1)) / 2)
+                oExtLine.h_line := line.new(bar_index, oCamMap.get(cam), bar_index + oLabelOffset, oCamMap.get(cam), extend = extendLines ? extend.right : extend.none, color = colour, style = line.style_solid, width = linewidth)
+                oExtLine.h_label := label.new(bar_index + oLabelOffset, oCamMap.get(cam), "O" + cam, color = colour, style = label.style_label_left, textcolor = contrastTextColour(colour))
+                oExtLineMap.put(cam, oExtLine)
+
+            if showWeekly
+                ExtLine wExtLine = ExtLine.new()     
+                colour := switch str.substring(cam, 0, 1)
+                    "R" => wResistanceColour
+                    "S" => wSupportColour
+                    => color.white
+                linewidth := 4 - int(str.tonumber(str.substring(cam, 1)) / 2)
+                wExtLine.h_line := line.new(bar_index, wCamMap.get(cam), bar_index + wLabelOffset, wCamMap.get(cam), extend = extendLines ? extend.right : extend.none, color = colour, style = line.style_solid, width = linewidth)
+                wExtLine.h_label := label.new(bar_index + wLabelOffset, wCamMap.get(cam), "W" + cam, color = colour, style = label.style_label_left, textcolor = contrastTextColour(colour))
+                wExtLineMap.put(cam, wExtLine)
+
+            if showMonthly
+                ExtLine mExtLine = ExtLine.new()     
+                colour := switch str.substring(cam, 0, 1)
+                    "R" => mResistanceColour
+                    "S" => mSupportColour
+                    => color.white
+                linewidth := 4 - int(str.tonumber(str.substring(cam, 1)) / 2)
+                mExtLine.h_line := line.new(bar_index, mCamMap.get(cam), bar_index + mLabelOffset, mCamMap.get(cam), extend = extendLines ? extend.right : extend.none, color = colour, style = line.style_solid, width = linewidth)
+                mExtLine.h_label := label.new(bar_index + mLabelOffset, mCamMap.get(cam), "M" + cam, color = colour, style = label.style_label_left, textcolor = contrastTextColour(colour))
+                mExtLineMap.put(cam, mExtLine)
+
+        // Update the extension lines and labels on the last bar
+        line h_line = extLineMap.get(cam).h_line
+        label h_label = extLineMap.get(cam).h_label
+        line.set_xy1(h_line, bar_index, camMap.get(cam))
+        line.set_xy2(h_line, bar_index + labelOffset, camMap.get(cam))
+        label.set_xy(h_label, bar_index + labelOffset, camMap.get(cam))
+
+        if showOther
+            h_line := oExtLineMap.get(cam).h_line
+            h_label := oExtLineMap.get(cam).h_label
+            line.set_xy1(h_line, bar_index, oCamMap.get(cam))
+            line.set_xy2(h_line, bar_index + oLabelOffset, oCamMap.get(cam))
+            label.set_xy(h_label, bar_index + oLabelOffset, oCamMap.get(cam))
+
+        if showWeekly
+            h_line := wExtLineMap.get(cam).h_line
+            h_label := wExtLineMap.get(cam).h_label
+            line.set_xy1(h_line, bar_index, wCamMap.get(cam))
+            line.set_xy2(h_line, bar_index + wLabelOffset, wCamMap.get(cam))
+            label.set_xy(h_label, bar_index + wLabelOffset, wCamMap.get(cam))
+
+        if showMonthly
+            h_line := mExtLineMap.get(cam).h_line
+            h_label := mExtLineMap.get(cam).h_label
+            line.set_xy1(h_line, bar_index, mCamMap.get(cam))
+            line.set_xy2(h_line, bar_index + mLabelOffset, mCamMap.get(cam))
+            label.set_xy(h_label, bar_index + mLabelOffset, mCamMap.get(cam))
+
+    // Show yesteday's close
+    if showCP
+        var line lineClose = line.new(bar_index, useEthForCams and not useRthCloseWithEthData ? yEthClose : yRthClose, bar_index + labelOffset, useEthForCams and not useRthCloseWithEthData ? yEthClose : yRthClose, extend = extendLines ? extend.right : extend.none, color = cpColour, style = line.style_solid, width = 1)    
+        var label labelClose = label.new(bar_index + labelOffset, useEthForCams and not useRthCloseWithEthData ? yEthClose : yRthClose, "CP", color = cpColour, style = label.style_label_left, textcolor = contrastTextColour(cpColour)) 
+        line.set_xy1(lineClose, bar_index, useEthForCams and not useRthCloseWithEthData ? yEthClose : yRthClose)
+        line.set_xy2(lineClose, bar_index + labelOffset, useEthForCams and not useRthCloseWithEthData ? yEthClose : yRthClose)
+        label.set_xy(labelClose, bar_index + labelOffset, useEthForCams and not useRthCloseWithEthData ? yEthClose : yRthClose)
+
+    if showCP and showOther
+        var line lineClose = line.new(bar_index, useEthForCams and not useRthCloseWithEthData ? yRthClose : yEthClose, bar_index + oLabelOffset, useEthForCams and not useRthCloseWithEthData ? yRthClose : yRthClose, extend = extendLines ? extend.right : extend.none, color = oCpColour, style = line.style_solid, width = 1)    
+        var label labelClose = label.new(bar_index + oLabelOffset, useEthForCams and not useRthCloseWithEthData ? yRthClose : yEthClose, "OCP", color = oCpColour, style = label.style_label_left, textcolor = contrastTextColour(oCpColour)) 
+        line.set_xy1(lineClose, bar_index, useEthForCams and not useRthCloseWithEthData ? yRthClose : yEthClose)
+        line.set_xy2(lineClose, bar_index + oLabelOffset, useEthForCams and not useRthCloseWithEthData ? yRthClose : yEthClose)
+        label.set_xy(labelClose, bar_index + oLabelOffset, useEthForCams and not useRthCloseWithEthData ? yRthClose : yEthClose)
+
+    if showCP and showWeekly
+        var line lineClose = line.new(bar_index, wClose, bar_index + wLabelOffset, wClose, extend = extendLines ? extend.right : extend.none, color = wCpColour, style = line.style_solid, width = 1)
+        var label labelClose = label.new(bar_index + wLabelOffset, wClose, "WCP", color = wCpColour, style = label.style_label_left, textcolor = contrastTextColour(wCpColour))
+        line.set_xy1(lineClose, bar_index, wClose)
+        line.set_xy2(lineClose, bar_index + wLabelOffset, wClose)
+        label.set_xy(labelClose, bar_index + wLabelOffset, wClose)
+
+    if showCP and showMonthly
+        var line lineClose = line.new(bar_index, mClose, bar_index + mLabelOffset, mClose, extend = extendLines ? extend.right : extend.none, color = mCpColour, style = line.style_solid, width = 1)
+        var label labelClose = label.new(bar_index + mLabelOffset, mClose, "MCP", color = mCpColour, style = label.style_label_left, textcolor = contrastTextColour(mCpColour))
+        line.set_xy1(lineClose, bar_index, mClose)
+        line.set_xy2(lineClose, bar_index + mLabelOffset, mClose)
+        label.set_xy(labelClose, bar_index + mLabelOffset, mClose)
+
+//#endregion ---- Extension lines and labels
+
+//#region ---- Table
+
+string strategyText = na
+if rthOpen > S4 and rthOpen < S3 or rthOpen > R3 and rthOpen < R4
+    strategyText := "No Play Possible"
+else
+    strategyText := (na(activeStrategy) ? "No Active Play" : activeStrategy + ": " + strategyStateMap.get(activeStrategy).description)
+
+// Top right info table. (Re)Draw the table on the last bar
+if barstate.islast and not hideInfoTable
+    var table infoTable = table.new(position.top_right, 3, 2, color.black, color.white, 1, color.white, 1)
+    table.merge_cells(infoTable, 0, 1, 2, 1)
+    if not timeframe.isdwm
+        table.cell(infoTable, 0, 0, useEthForCams ? "Using ETH Data" : "Using RTH Data", text_color = color.white)
+        table.cell(infoTable, 1, 0, str.tostring(camRange), text_color = color.white)
+        table.cell(infoTable, 2, 0, valueRelationship, text_color = color.white)
+        table.cell(infoTable, 0, 1, strategyText, text_color = color.white)
+    else
+        table.cell(infoTable, 0, 0, "───────", text_color = color.white)
+        table.cell(infoTable, 1, 0, "───────", text_color = color.white)
+        table.cell(infoTable, 2, 0, "───────", text_color = color.white)
+        table.cell(infoTable, 0, 1, "Deactivated on D/W/M timeframe", text_color = color.white)
+
+//#endregion ---- Table
+
+//#endregion ---- Visuals
+
+// ---- Alerts
+//#region ---- Alerts
+
+alertcondition(strategyEvent, "Strategy Event", "{{ticker}} Camarilla strategy event at {{time}}")
+
+//#endregion ---- Alerts
