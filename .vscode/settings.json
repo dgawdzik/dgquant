@@ -10,5 +10,6 @@
       "args": ["-i", "-c", "source ${workspaceFolder}/.env; exec zsh -i"]
     }
   },
-  "terminal.integrated.defaultProfile.osx": "CustomZsh"
+  "terminal.integrated.defaultProfile.osx": "CustomZsh",
+  "cSpell.words": ["Backtest", "macd"]
 }
