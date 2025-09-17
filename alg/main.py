@@ -10,7 +10,7 @@ class Alg(QCAlgorithm):
     SYMBOL: str = "NVDA"
     
     def initialize(self):
-        self.set_start_date(2025, 4, 16)  # Set Start Date
+        self.set_start_date(2025, 4, 15)  # Set Start Date
         self.set_end_date(2025, 4, 16)  # Set End Date
         self.set_cash(10_000)  # Set Strategy Cash
         

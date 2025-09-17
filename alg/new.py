@@ -10,17 +10,17 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
     1-minute 8/21 EMA-crossover strategy that trades **only when
     BOTH the 1-minute and the 5-minute MACD agree** on direction.
 
-      • enter on EMA cross *and* MACD agreement
-      • exit when the fast EMA breaks back through the slow EMA
+    • enter on EMA cross *and* MACD agreement
+    • exit when the fast EMA breaks back through the slow EMA
         or the 1.2 × ATR stop is hit
-      • volume & ATR filters
-      • risk-based sizing plus buying-power buffer
+    • volume & ATR filters
+    • risk-based sizing plus buying-power buffer
     Compatible with LEAN v17076 (no 5-min Resolution helper, uses a consolidator).
     """
 
     FAST, SLOW = 23, 50
     RISK_PCT   = 0.02
-    SYMBOL     = "NVDA"
+    SYMBOL     = "HOOD"
     BP_BUFFER  = 100
 
     # MACD parameters
@@ -28,13 +28,13 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
     MACD_SLOW = 26
     MACD_SIG  = 9
 
-    SESSION_START = time(9, 35)
+    SESSION_START = time(4, 0)
     SESSION_END   = time(15, 55)
 
     # --------------- INITIALISE -----------------
     def initialize(self):
-        self.set_start_date(2025, 1, 13)
-        self.set_end_date  (2025, 1, 17)
+        self.set_start_date(2025, 8, 1)
+        self.set_end_date  (2025, 9, 15)
         self.set_cash(10_000)
 
         self.universe_settings.resolution            = Resolution.MINUTE
@@ -68,8 +68,8 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
             self.MACD_FAST, self.MACD_SLOW, self.MACD_SIG, MovingAverageType.Exponential
         )
         five_min = TradeBarConsolidator(timedelta(minutes=5))
-        five_min.DataConsolidated += lambda s, bar: self.macd_5m.Update(bar.EndTime, bar.Close)
-        self.SubscriptionManager.AddConsolidator(self.sym, five_min)
+        five_min.data_consolidated += lambda s, bar: self.macd_5m.update(bar.end_time, bar.close)
+        self.subscription_manager.add_consolidator(self.sym, five_min)
 
         # Filters
         self.atr       = self.atr(self.sym, 14, MovingAverageType.Simple, Resolution.MINUTE)
@@ -85,33 +85,36 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
 
     # --------------- HELPERS -------------------
     def in_session(self):
-        return self.SESSION_START <= self.Time.time() <= self.SESSION_END
+        return self.SESSION_START <= self.time.time() <= self.SESSION_END
+
+    def has_open_orders(self) -> bool:
+        return any(self.transactions.get_open_orders(self.sym))
 
     # ---------- MACD-direction helpers ----------
     def macd_bullish(self) -> bool:
         return (
-            self.macd_1m.IsReady
-            and self.macd_5m.IsReady
-            and self.macd_1m.Current.Value > self.macd_1m.Signal.Current.Value
-            and self.macd_5m.Current.Value > self.macd_5m.Signal.Current.Value
+            self.macd_1m.is_ready
+            and self.macd_5m.is_ready
+            and self.macd_1m.current.value > self.macd_1m.signal.current.value
+            and self.macd_5m.current.value > self.macd_5m.signal.current.value
         )
 
     def macd_bearish(self) -> bool:
         return (
-            self.macd_1m.IsReady
-            and self.macd_5m.IsReady
-            and self.macd_1m.Current.Value < self.macd_1m.Signal.Current.Value
-            and self.macd_5m.Current.Value < self.macd_5m.Signal.Current.Value
+            self.macd_1m.is_ready
+            and self.macd_5m.is_ready
+            and self.macd_1m.current.value < self.macd_1m.signal.current.value
+            and self.macd_5m.current.value < self.macd_5m.signal.current.value
         )
 
     def position_size(self, stop_dollar: float, price: float) -> int:
-        risk_cap = self.Portfolio.TotalPortfolioValue * self.RISK_PCT
+        risk_cap = self.portfolio.total_portfolio_value * self.RISK_PCT
         qty_risk = risk_cap / stop_dollar
 
-        bp_left  = max(0, self.Portfolio.MarginRemaining - self.BP_BUFFER)
+        bp_left  = max(0, self.portfolio.margin_remaining - self.BP_BUFFER)
         qty_bp   = bp_left / price
 
-        lot = self.Securities[self.sym].SymbolProperties.LotSize
+        lot = self.securities[self.sym].symbol_properties.lot_size
         qty = int(min(qty_risk, qty_bp) // lot * lot)
         return max(lot if qty == 0 else qty, 0)
 
@@ -124,56 +127,60 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
         bar = data.bars[self.sym]
 
         # ---------- exit management -------------
-        fast_val = self.fast_ema.Current.Value
-        slow_val = self.slow_ema.Current.Value
         if self.position_dir == 1:
-            if bar.Low <= self.stop_price or fast_val < slow_val:
-                self.liquidate(self.sym)
+            if bar.low <= self.stop_price or self.macd_bearish() or not self.in_session():
+                qty_to_exit = -self.portfolio[self.sym].quantity
+                if qty_to_exit > 0:
+                    self.limit_order(self.sym, qty_to_exit, bar.close - 0.2)
                 self.position_dir = 0
         elif self.position_dir == -1:
-            if bar.High >= self.stop_price or fast_val > slow_val:
-                self.liquidate(self.sym)
+            if bar.high >= self.stop_price or self.macd_bullish() or not self.in_session():
+                qty_to_cover = -self.portfolio[self.sym].quantity
+                if qty_to_cover > 0:
+                    self.limit_order(self.sym, qty_to_cover, bar.close + 0.2)
                 self.position_dir = 0
 
         # ---------- session guard --------------
         if not self.in_session():
-            if self.Portfolio.Invested:
+            if self.portfolio.invested or self.has_open_orders():
                 self.liquidate(self.sym)
                 self.position_dir = 0
             return
 
         # ---------- filters --------------------
-        if not self.vol_sma20.IsReady or not self.atr.IsReady or not self.macd_5m.IsReady:
+        if not self.vol_sma20.is_ready or not self.atr.is_ready or not self.macd_5m.is_ready:
             return
 
-        vol_ok = bar.Volume >= 0.5 * self.vol_sma20.Current.Value
+        vol_ok = bar.volume >= 1.5 * self.vol_sma20.current.value
 
-        atr_val = self.atr.Current.Value
+        atr_val = self.atr.current.value
         self.atr_vals.append(atr_val)
-        volat_ok = len(self.atr_vals) == 20 and atr_val > statistics.median(self.atr_vals)
+        volat_ok = len(self.atr_vals) == 20 and atr_val > statistics.median(self.atr_vals) * 1.5
 
         if not (vol_ok and volat_ok):
             return
 
         # ---------- crossover trigger ----------
+        fast_val = self.fast_ema.current.value
+        slow_val = self.slow_ema.current.value
         diff       = fast_val - slow_val
         cross_up   = self.prev_diff <= 0 < diff
         cross_down = self.prev_diff >= 0 > diff
         self.prev_diff = diff
 
-        stop_dist = atr_val * 1.2
-        qty       = self.position_size(stop_dist, bar.Close)
+        stop_dist = atr_val * 1.5
+        qty       = self.position_size(stop_dist, bar.close)
         if qty == 0:
             return
 
         # ---------- entries --------------------
-        if self.position_dir == 0:                           # only enter if flat
+        if self.position_dir == 0 and not self.portfolio.invested and not self.has_open_orders():               # only enter if flat
             if cross_up and self.macd_bullish():
-                self.buy(self.sym, qty)
+                self.limit_order(self.sym, qty, bar.close)
                 self.position_dir = 1
-                self.stop_price   = bar.Close - stop_dist
+                self.stop_price   = bar.close - stop_dist
 
             elif cross_down and self.macd_bearish():
-                self.sell(self.sym, qty)                    # open short
+                self.limit_order(self.sym, -qty, bar.close)                    # open short
                 self.position_dir = -1
-                self.stop_price   = bar.Close + stop_dist
+                self.stop_price   = bar.close + stop_dist

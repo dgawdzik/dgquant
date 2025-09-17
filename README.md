@@ -29,8 +29,8 @@ conda config --add channels conda-forge # May not be needed if channel already a
 conda install ipykernel # Needed for Notebook support
 conda env export --no-builds > environment.yml
 # This is needed to get auto-complete working and needs to be in sync with the Lean engine Docker image
-pip install quantconnect-stubs==17034 
-pip install quantconnect-lean==17034
+pip install quantconnect-stubs==17290 
+pip install quantconnect-lean==17290
 ```
 
 You can remove the environment by
@@ -69,10 +69,14 @@ To run local research server with notebook support served from docker container 
 lean research .
 ```
 
-To update Lean engine:
+To update Lean engine from conda venv (sub version number for 17290 place holder):
 
 ```zsh
-lean engine update
+pip install --upgrade lean
+lean config set engine-image quantconnect/lean:17290
+lean config set research-image quantconnect/research:17290
+pip install --upgrade quantconnect-lean quantconnect-stubs
+conda env export --no-builds > environment.yml
 ```
 
 After an update, do make sure to remove absolute path that were defined inside of the [environment.yml](environment.yml) by deleting `name` and `prefix` elements. See previous git history.
@@ -98,8 +102,8 @@ lean config list
 The configuration is stored in globally in user folder under `~/.lean/config`. It can be initially set by the following:
 
 ```zsh
-lean config set engine-image quantconnect/lean:17034
-lean config set research-image quantconnect/research:17034
+lean config set engine-image quantconnect/lean:17290
+lean config set research-image quantconnect/research:17290
 ```
 
 # Development
