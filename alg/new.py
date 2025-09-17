@@ -17,7 +17,6 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
     • risk-based sizing plus buying-power buffer
     Compatible with LEAN v17076 (no 5-min Resolution helper, uses a consolidator).
     """
-
     FAST, SLOW = 23, 50
     RISK_PCT   = 0.02
     SYMBOL     = "HOOD"
@@ -70,6 +69,9 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
         five_min = TradeBarConsolidator(timedelta(minutes=5))
         five_min.data_consolidated += lambda s, bar: self.macd_5m.update(bar.end_time, bar.close)
         self.subscription_manager.add_consolidator(self.sym, five_min)
+
+        # Parabolic SAR for trailing-stop management
+        self.psar_indicator = self.psar(self.sym, 0.02, 0.02, 0.2)
 
         # Filters
         self.atr       = self.atr(self.sym, 14, MovingAverageType.Simple, Resolution.MINUTE)
@@ -126,29 +128,41 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
 
         bar = data.bars[self.sym]
 
+        psar_value = self.psar_indicator.current.value if self.psar_indicator.is_ready else None
+
         # ---------- exit management -------------
+
         if self.position_dir == 1:
-            if bar.low <= self.stop_price or self.macd_bearish() or not self.in_session():
+            if psar_value is not None:
+                self.stop_price = psar_value if self.stop_price is None else max(self.stop_price, psar_value)
+
+            if self.stop_price is not None and (bar.low <= self.stop_price or self.macd_bearish() or not self.in_session()):
                 qty_to_exit = -self.portfolio[self.sym].quantity
                 if qty_to_exit > 0:
                     self.limit_order(self.sym, qty_to_exit, bar.close - 0.2)
                 self.position_dir = 0
+                self.stop_price   = None
         elif self.position_dir == -1:
-            if bar.high >= self.stop_price or self.macd_bullish() or not self.in_session():
+            if psar_value is not None:
+                self.stop_price = psar_value if self.stop_price is None else min(self.stop_price, psar_value)
+
+            if self.stop_price is not None and (bar.high >= self.stop_price or self.macd_bullish() or not self.in_session()):
                 qty_to_cover = -self.portfolio[self.sym].quantity
                 if qty_to_cover > 0:
                     self.limit_order(self.sym, qty_to_cover, bar.close + 0.2)
                 self.position_dir = 0
+                self.stop_price   = None
 
         # ---------- session guard --------------
         if not self.in_session():
             if self.portfolio.invested or self.has_open_orders():
                 self.liquidate(self.sym)
                 self.position_dir = 0
+                self.stop_price   = None
             return
 
         # ---------- filters --------------------
-        if not self.vol_sma20.is_ready or not self.atr.is_ready or not self.macd_5m.is_ready:
+        if not self.vol_sma20.is_ready or not self.atr.is_ready or not self.macd_5m.is_ready or not self.psar_indicator.is_ready:
             return
 
         vol_ok = bar.volume >= 1.5 * self.vol_sma20.current.value
@@ -168,19 +182,20 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
         cross_down = self.prev_diff >= 0 > diff
         self.prev_diff = diff
 
-        stop_dist = atr_val * 1.5
-        qty       = self.position_size(stop_dist, bar.close)
-        if qty == 0:
-            return
-
         # ---------- entries --------------------
         if self.position_dir == 0 and not self.portfolio.invested and not self.has_open_orders():               # only enter if flat
-            if cross_up and self.macd_bullish():
-                self.limit_order(self.sym, qty, bar.close)
-                self.position_dir = 1
-                self.stop_price   = bar.close - stop_dist
+            if cross_up and self.macd_bullish() and psar_value is not None and psar_value < bar.close:
+                stop_dist = bar.close - psar_value
+                qty       = self.position_size(stop_dist, bar.close)
+                if qty > 0:
+                    self.limit_order(self.sym, qty, bar.close)
+                    self.position_dir = 1
+                    self.stop_price   = psar_value
 
-            elif cross_down and self.macd_bearish():
-                self.limit_order(self.sym, -qty, bar.close)                    # open short
-                self.position_dir = -1
-                self.stop_price   = bar.close + stop_dist
+            elif cross_down and self.macd_bearish() and psar_value is not None and psar_value > bar.close:
+                stop_dist = psar_value - bar.close
+                qty       = self.position_size(stop_dist, bar.close)
+                if qty > 0:
+                    self.limit_order(self.sym, -qty, bar.close)                    # open short
+                    self.position_dir = -1
+                    self.stop_price   = psar_value
