@@ -84,6 +84,9 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
         # position state
         self.position_dir = 0      # +1 long | -1 short | 0 flat
         self.stop_price   = None
+        self.entry_price  = None
+        self.initial_stop = None
+        self.take_profit  = None
 
     # --------------- HELPERS -------------------
     def in_session(self):
@@ -133,6 +136,20 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
         # ---------- exit management -------------
 
         if self.position_dir == 1:
+            if (
+                self.take_profit is not None
+                and bar.high >= self.take_profit
+            ):
+                qty_to_exit = -self.portfolio[self.sym].quantity
+                if qty_to_exit > 0:
+                    self.limit_order(self.sym, qty_to_exit, self.take_profit)
+                self.position_dir = 0
+                self.stop_price   = None
+                self.entry_price  = None
+                self.initial_stop = None
+                self.take_profit  = None
+                return
+
             if psar_value is not None:
                 self.stop_price = psar_value if self.stop_price is None else max(self.stop_price, psar_value)
 
@@ -142,7 +159,24 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
                     self.limit_order(self.sym, qty_to_exit, bar.close - 0.2)
                 self.position_dir = 0
                 self.stop_price   = None
+                self.entry_price  = None
+                self.initial_stop = None
+                self.take_profit  = None
         elif self.position_dir == -1:
+            if (
+                self.take_profit is not None
+                and bar.low <= self.take_profit
+            ):
+                qty_to_cover = -self.portfolio[self.sym].quantity
+                if qty_to_cover > 0:
+                    self.limit_order(self.sym, qty_to_cover, self.take_profit)
+                self.position_dir = 0
+                self.stop_price   = None
+                self.entry_price  = None
+                self.initial_stop = None
+                self.take_profit  = None
+                return
+
             if psar_value is not None:
                 self.stop_price = psar_value if self.stop_price is None else min(self.stop_price, psar_value)
 
@@ -152,6 +186,9 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
                     self.limit_order(self.sym, qty_to_cover, bar.close + 0.2)
                 self.position_dir = 0
                 self.stop_price   = None
+                self.entry_price  = None
+                self.initial_stop = None
+                self.take_profit  = None
 
         # ---------- session guard --------------
         if not self.in_session():
@@ -159,6 +196,9 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
                 self.liquidate(self.sym)
                 self.position_dir = 0
                 self.stop_price   = None
+                self.entry_price  = None
+                self.initial_stop = None
+                self.take_profit  = None
             return
 
         # ---------- filters --------------------
@@ -191,6 +231,9 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
                     self.limit_order(self.sym, qty, bar.close)
                     self.position_dir = 1
                     self.stop_price   = psar_value
+                    self.entry_price  = bar.close
+                    self.initial_stop = stop_dist
+                    self.take_profit  = self.entry_price + 4 * self.initial_stop
 
             elif cross_down and self.macd_bearish() and psar_value is not None and psar_value > bar.close:
                 stop_dist = psar_value - bar.close
@@ -199,3 +242,6 @@ class OneMinEMACrossMacdBias(QCAlgorithm):
                     self.limit_order(self.sym, -qty, bar.close)                    # open short
                     self.position_dir = -1
                     self.stop_price   = psar_value
+                    self.entry_price  = bar.close
+                    self.initial_stop = stop_dist
+                    self.take_profit  = self.entry_price - 4 * self.initial_stop
