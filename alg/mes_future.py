@@ -1,20 +1,21 @@
 # region imports
-from datetime import timedelta
-import time
+from datetime import time, timedelta
 from AlgorithmImports import *
+from QuantConnect.Data.Consolidators import TickConsolidator
+from QuantConnect.Indicators import ExponentialMovingAverage
 import pytz
 # endregion
 
 class MesGoldenDeathCrossRTH(QCAlgorithm):
     """
-    Trades 2 contracts of Micro E-mini S&P 500 (MES) on a simple
-    23 / 50-EMA cross, but **only** during
+    Trades 1 contract of Micro E-mini S&P 500 (MES) on a simple
+    20 / 25 EMA cross built on 1000-tick bars, but **only** during
     09 : 30 → 16 : 00 US-Eastern.  Any open position is closed no later
     than 15 : 58 ET and a $100 stop-loss is attached while a trade is open.
     """
 
-    FAST, SLOW = 23, 50
-    CONTRACTS  = 2
+    FAST, SLOW = 20, 25
+    CONTRACTS  = 1
     STOP_RISK  = 100          # $ stop for the WHOLE position
     POINT_VAL  = 5.0          # $ per index-point for one MES contract
 
@@ -24,26 +25,25 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
     FLAT_ET    = time(15, 58)  # hard-flatten deadline
     SYMBOL     = Futures.Indices.SP_500_E_MINI   # CME - "ES"
 
-    RSI_LEN    = 60
-    RSI_OB     = 70           # over-bought  → short only above this
-    RSI_OS     = 30           # over-sold    → long  only below this
-
     # ---------------- initialise -----------------
     def initialize(self):
-        self.set_start_date(2025, 1, 1)
-        self.set_end_date  (2025, 4, 25)
+        self.set_start_date(2025, 9, 1)
+        self.set_end_date  (2025, 11, 3)
         self.set_cash(40_000)
 
-        self.universe_settings.resolution = Resolution.MINUTE
+        self.universe_settings.resolution = Resolution.TICK
 
-        fut = self.add_future(self.SYMBOL, Resolution.MINUTE,
+        fut = self.add_future(self.SYMBOL, Resolution.TICK,
                               leverage = 1,
                               extended_market_hours = True,
                               data_normalization_mode=DataNormalizationMode.RAW)
         fut.set_filter(timedelta(0), timedelta(days=90))
 
         self.contract   = None
-        self.indicators = {}          # {Symbol: {'fast','slow','rsi'}}
+        self.indicators = {}          # {Symbol: {'fast','slow'}}
+        self.tick_consolidators = {}
+        self.latest_bar = {}
+        self.last_bar_time = {}
         self.prev_diff  = 0.0
         self.stop_ticket = None
 
@@ -52,27 +52,60 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         if symbol in self.indicators:
             return
 
-        fast = self.ema(symbol, self.FAST, Resolution.MINUTE)
-        slow = self.ema(symbol, self.SLOW, Resolution.MINUTE)
-        rsi = self.rsi(symbol, self.RSI_LEN, MovingAverageType.SIMPLE, Resolution.MINUTE)
+        consolidator = TickConsolidator(1000)
+        consolidator.DataConsolidated += lambda _, bar: self._on_consolidated(symbol, bar)
+        self.subscription_manager.add_consolidator(symbol, consolidator)
 
-        self.indicators[symbol] = {"fast": fast, "slow": slow, "rsi": rsi}
+        fast = ExponentialMovingAverage(f"{symbol.value}_fast", self.FAST)
+        slow = ExponentialMovingAverage(f"{symbol.value}_slow", self.SLOW)
+
+        self.register_indicator(symbol, fast, consolidator, lambda bar: bar.close)
+        self.register_indicator(symbol, slow, consolidator, lambda bar: bar.open)
+
+        self.indicators[symbol] = {"fast": fast, "slow": slow}
+        self.tick_consolidators[symbol] = consolidator
+        self.last_bar_time[symbol] = None
 
     # ---------------- on_data --------------------
     def on_data(self, slice: Slice):
 
         # pick front contract each day
-        if self.contract is None or self.contract not in slice.bars:
+        if slice.futures_chains:
             for chain in slice.futures_chains.values():
+                if not chain.Contracts:
+                    continue
                 front = sorted(chain.Contracts.values(), key=lambda c: c.Expiry)[0]
                 if self.contract != front.Symbol:
+                    self._cancel_stop()
+                    if self.contract:
+                        consolidator = self.tick_consolidators.pop(self.contract, None)
+                        if consolidator:
+                            self.subscription_manager.remove_consolidator(self.contract, consolidator)
+                        self.indicators.pop(self.contract, None)
+                        self.latest_bar.pop(self.contract, None)
+                        self.last_bar_time.pop(self.contract, None)
                     self.contract = front.Symbol
+                    self.prev_diff = 0.0
                     self._ensure(self.contract)
+                    self.latest_bar.pop(self.contract, None)
+                    self.last_bar_time.pop(self.contract, None)
+                break
+
+        if self.contract is None:
             return
 
-        bar = slice.bars[self.contract]
+        self._ensure(self.contract)
+        bar = self.latest_bar.get(self.contract)
+        if bar is None:
+            return
+
+        end_time = bar.EndTime
+        if self.last_bar_time.get(self.contract) == end_time:
+            return
+        self.last_bar_time[self.contract] = end_time
+
         ind = self.indicators[self.contract]
-        if not (ind["fast"].is_ready and ind["slow"].is_ready and ind["rsi"].is_ready):
+        if not (ind["fast"].is_ready and ind["slow"].is_ready):
             return
 
         # current ET
@@ -96,8 +129,6 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         self.prev_diff = diff
 
         qty = self.portfolio[self.contract].quantity
-        rsi_val = ind["rsi"].Current.Value
-
         # ---------------- exits --------------------
         if qty > 0 and cross_down:
             self._cancel_stop()
@@ -112,30 +143,33 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         if qty == 0:
             points_risk = self.STOP_RISK / (self.CONTRACTS * self.POINT_VAL)
 
-            # LONG only if RSI oversold
-            if cross_up and rsi_val <= self.RSI_OS:
-                entry = bar.close
+            if cross_up:
+                entry = bar.Close
                 stop  = round(entry - points_risk, 2)
                 self.market_order(self.contract,  self.CONTRACTS)
                 self.stop_ticket = self.stop_market_order(
                     self.contract, -self.CONTRACTS, stop, tag="SL-$100 LONG")
 
-            # SHORT only if RSI over-bought
-            elif cross_down and rsi_val >= self.RSI_OB:
-                entry = bar.close
+            elif cross_down:
+                entry = bar.Close
                 stop  = round(entry + points_risk, 2)
                 self.market_order(self.contract, -self.CONTRACTS)
                 self.stop_ticket = self.stop_market_order(
                     self.contract,  self.CONTRACTS, stop, tag="SL-$100 SHORT")
 
     # -------------- util helpers ----------------
+    def _on_consolidated(self, symbol: Symbol, bar: TradeBar):
+        self.latest_bar[symbol] = bar
+
     def _cancel_stop(self):
         if self.stop_ticket and self.stop_ticket.status in (OrderStatus.NEW,
                                                             OrderStatus.SUBMITTED,
                                                             OrderStatus.PARTIALLY_FILLED):
-          self.stop_ticket.cancel()
-          
+            self.stop_ticket.cancel()
         self.stop_ticket = None
 
     def on_end_of_algorithm(self):
         self._cancel_stop()
+        for symbol, consolidator in list(self.tick_consolidators.items()):
+            self.subscription_manager.remove_consolidator(symbol, consolidator)
+        self.tick_consolidators.clear()
