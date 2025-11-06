@@ -46,6 +46,7 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         self.last_bar_time = {}
         self.prev_diff  = 0.0
         self.stop_ticket = None
+        self.last_roll_date = None
 
     # ---------------- indicator helper -----------
     def _ensure(self, symbol: Symbol):
@@ -70,26 +71,40 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
     def on_data(self, slice: Slice):
 
         # pick front contract each day
-        if slice.futures_chains:
+        current_date = self.time.date()
+        need_roll = self.contract is None or self.last_roll_date != current_date
+
+        if need_roll:
+            if not slice.futures_chains:
+                return
+
+            front = None
             for chain in slice.futures_chains.values():
                 if not chain.Contracts:
                     continue
                 front = sorted(chain.Contracts.values(), key=lambda c: c.Expiry)[0]
-                if self.contract != front.Symbol:
-                    self._cancel_stop()
-                    if self.contract:
-                        consolidator = self.tick_consolidators.pop(self.contract, None)
-                        if consolidator:
-                            self.subscription_manager.remove_consolidator(self.contract, consolidator)
-                        self.indicators.pop(self.contract, None)
-                        self.latest_bar.pop(self.contract, None)
-                        self.last_bar_time.pop(self.contract, None)
-                    self.contract = front.Symbol
-                    self.prev_diff = 0.0
-                    self._ensure(self.contract)
+                break
+
+            if front is None:
+                return
+
+            if self.contract != front.Symbol:
+                self._cancel_stop()
+                if self.contract:
+                    consolidator = self.tick_consolidators.pop(self.contract, None)
+                    if consolidator:
+                        self.subscription_manager.remove_consolidator(self.contract, consolidator)
+                    self.indicators.pop(self.contract, None)
                     self.latest_bar.pop(self.contract, None)
                     self.last_bar_time.pop(self.contract, None)
-                break
+                self.contract = front.Symbol
+                self.prev_diff = 0.0
+
+            self._ensure(self.contract)
+            self.latest_bar[self.contract] = None
+            self.last_bar_time[self.contract] = None
+            self.last_roll_date = current_date
+            return
 
         if self.contract is None:
             return

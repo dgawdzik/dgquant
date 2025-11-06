@@ -11,5 +11,5 @@
     }
   },
   "terminal.integrated.defaultProfile.osx": "CustomZsh",
-  "cSpell.words": ["Backtest", "macd"]
+  "cSpell.words": ["Backtest", "macd", "XNAS", "XNYS"]
 }

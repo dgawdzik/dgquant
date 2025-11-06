@@ -143,3 +143,15 @@ deb debug
 ```
 
 Then go to debug tab in VSCode and press on the debug green arrow button.
+
+# Data Download from QuantConnect
+
+```shell
+lean data download \
+  --security-type Future \
+  --ticker MES \
+  --market CME \
+  --resolution Tick \
+  --start 2025-09-01 \
+  --end 2025-11-05
+```

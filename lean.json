@@ -8,7 +8,7 @@
     "api-handler": "QuantConnect.Api.Api",
     "map-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskMapFileProvider",
     "factor-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskFactorFileProvider",
-    "data-provider": "QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider",
+    "data-provider": "QuantConnect.Lean.Engine.DataFeeds.DownloaderDataProvider",
     "data-channel-provider": "DataChannelProvider",
     "object-store": "QuantConnect.Lean.Engine.Storage.LocalObjectStore",
     "data-aggregator": "QuantConnect.Lean.Engine.DataFeeds.AggregationManager",
@@ -123,7 +123,7 @@
     "charles-schwab-api-url": "https://api.schwabapi.com",
     "charles-schwab-app-key": "",
     "charles-schwab-secret": "",
-    "charles-schwab-account-number": "",
+    "charles-schwab-account-number": "52487667",
     "charles-schwab-refresh-token": "",
     "charles-schwab-authorization-code-from-url": "",
     "charles-schwab-redirect-url": "",
@@ -592,6 +592,9 @@
     },
     "job-organization-id": "11dd0c00e332bcec91e2c3f6f88ca09d",
     "organization-id": "11dd0c00e332bcec91e2c3f6f88ca09d",
-    "file-database-last-update": "09/16/2025 20:59:53",
-    "id": "Local"
+    "file-database-last-update": "11/05/2025 21:59:16",
+    "id": "CharlesSchwabBrokerage",
+    "data-downloader": "QuantConnect.DownloaderDataProvider.Launcher.Models.BrokerageDataDownloader",
+    "data-downloader-brokerage": "CharlesSchwabBrokerage",
+    "refreshToken": "ryUVXfMJUfNJXlXqP3Stx0boCNnI5YilSlT_GGHuJ-Td6U3xHwARnfJBXNguIgTR1hu1IxrQv4FWk8K4n3j7lHhy_i90mv-3yxdZY42oHjhzkh801F8Hzcwhsglg93TYQMY4TmKtMLw@"
 }
