@@ -3,17 +3,25 @@ from AlgorithmImports import *
 import datetime
 # endregion
 
-class DgUniverseSelectionSmallCaps(QCAlgorithm):
+class SmallCapitalizationPlusNews(QCAlgorithm):
 
+    MAX_SHARE_FLOAT : int = 500_000_000
+    MAX_PRICE : float = 20.0
+    
+    EXCHANGE_NYSE_ID = "XNYS"
+    EXCHANGE_NASDAQ_ID = "XNAS"
+    
+    ALLOWED_EXCHANGES = [EXCHANGE_NYSE_ID, EXCHANGE_NASDAQ_ID]
+    
     def initialize(self):
         self.set_start_date(2025, 9, 29)
-        self.set_end_date(2025, 10,1)
+        self.set_end_date(2025, 10, 12)
 
-        self.set_cash(30000)
+        self.set_cash(30_000)
 
         self.universe_settings.minimum_time_in_universe = datetime.timedelta(days = 0)
         self.universe_settings.extended_market_hours = True
-        self.add_universe(self.select_universe)
+        self.add_universe(self.select_universe_coarse, self.select_universe_fine)
 
         self.symbols = []
         self.symbol_to_macd = {}
@@ -26,7 +34,7 @@ class DgUniverseSelectionSmallCaps(QCAlgorithm):
         
         self.schedule.on(
             date_rule = self.date_rules.every_day(symbol = self.nvda_symbol),
-            time_rule = self.time_rules.at(hour = 4, minute = 0, second = 0), # Start trading on pre-market open 
+            time_rule = self.time_rules.at(hour = 4, minute = 1, second = 0), # Start trading on pre-market open 
             callback = self.set_start_trading
             )
 
@@ -42,29 +50,39 @@ class DgUniverseSelectionSmallCaps(QCAlgorithm):
     def set_stop_trading(self):
         self.in_trading_time_interval = False
 
-    def select_universe(self, fundamentals : list[Fundamental]) -> list[Symbol]:
+    def select_universe_coarse(self, fundamentals : list[CoarseFundamental]) -> list[Symbol]:
         result = []
 
         for fundamental in fundamentals:
-            if fundamental.price > 5 and fundamental.earning_reports.basic_eps.value > 1:
-                # Debt to Equity ration = total debt / total equity
-                if fundamental.financial_statements.balance_sheet.total_debt.value / fundamental.financial_statements.balance_sheet.total_equity.value > 1:
-                    if fundamental.operation_ratios.roe.value > 0.2:
-                        if fundamental.operation_ratios.revenue_growth.one_year > 0.1:
-                            if fundamental.operation_ratios.net_income_growth.one_year > 0.1:
-                                #if fundamental.asset_classification.morning_star_industry_code == MorningstarIndustryCode.SEMICONDUCTORS:
-                                if fundamental.symbol != self.nvda_symbol:
-                                    result.append(fundamental.symbol)
-                                    # self.log(fundamental.symbol.value)
+            
+            if fundamental.symbol != self.nvda_symbol and fundamental.has_fundamental_data and fundamental.price <= SmallCapitalizationPlusNews.MAX_PRICE:
+                result.append(fundamental.symbol)
 
         # Add open order symbols to universe
         for symbol in self.symbols:
             symbol_open_order_tickets = list(self.transactions.get_open_order_tickets(symbol=symbol))
             if (self.portfolio[symbol].invested or len(symbol_open_order_tickets) > 0) and symbol not in result:
                 result.append(symbol)
-
+    
         return result
 
+    def select_universe_fine(self, fundamentals : list[FineFundamental]) -> list[Symbol]:
+        result = []
+
+        for fundamental in fundamentals:
+            exchange_id = fundamental.security_reference.exchange_id
+            
+            if exchange_id in SmallCapitalizationPlusNews.ALLOWED_EXCHANGES and fundamental.symbol != self.nvda_symbol:
+                result.append(fundamental.symbol)
+                # shares_outstanding = fundamental.company_profile.shares_outstanding
+                # if shares_outstanding is not None and shares_outstanding <= SmallCapitalizationPlusNews.MAX_OUTSTANDING_SHARES:
+
+        self.log(f"{self.time}: Universe selected {len(result)} symbols")
+        for symbol in result:
+            self.log(f"{self.time}: symbol [{symbol}] added to universe")
+
+        return result
+    
     def on_securities_changed(self, changes: SecurityChanges) -> None:
         self.is_warm_up = False
         
@@ -118,17 +136,18 @@ class DgUniverseSelectionSmallCaps(QCAlgorithm):
         self.is_warm_up = True
     
     def on_data_consolidated_5_min(self, sender, bar):
-        if self.is_warm_up and self.in_trading_time_interval:
-            symbol = bar.symbol
-            symbol_open_order_tickets = list(self.transactions.get_open_order_tickets(symbol=symbol))
+        # if self.is_warm_up and self.in_trading_time_interval:
+        #     symbol = bar.symbol
+        #     symbol_open_order_tickets = list(self.transactions.get_open_order_tickets(symbol=symbol))
 
-            if len(symbol_open_order_tickets) == 0 and self.symbol_to_macd[symbol].is_ready:
-                if self.symbol_to_macd[symbol].current.value > self.symbol_to_macd[symbol].signal.current.value:
-                    if not self.portfolio[symbol].invested:
-                        self.limit_order(symbol=symbol, quantity=10, limit_price=bar.close)
-                elif self.symbol_to_macd[symbol].current.value < self.symbol_to_macd[symbol].signal.current.value:
-                    if self.portfolio[symbol].invested:
-                        self.limit_order(symbol=symbol, quantity = -self.portfolio[symbol].quantity, limit_price=bar.close)
-
+        #     if len(symbol_open_order_tickets) == 0 and self.symbol_to_macd[symbol].is_ready:
+        #         if self.symbol_to_macd[symbol].current.value > self.symbol_to_macd[symbol].signal.current.value:
+        #             if not self.portfolio[symbol].invested:
+        #                 self.limit_order(symbol=symbol, quantity=10, limit_price=bar.close)
+        #         elif self.symbol_to_macd[symbol].current.value < self.symbol_to_macd[symbol].signal.current.value:
+        #             if self.portfolio[symbol].invested:
+        #                 self.limit_order(symbol=symbol, quantity = -self.portfolio[symbol].quantity, limit_price=bar.close)
+        pass
+    
     def on_data(self, data: Slice):
         pass

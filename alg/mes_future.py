@@ -1,8 +1,9 @@
 # region imports
 from datetime import time, timedelta
 from AlgorithmImports import *
+from QuantConnect import Extensions
 from QuantConnect.Data.Consolidators import TickConsolidator
-from QuantConnect.Indicators import ExponentialMovingAverage
+from QuantConnect.Indicators import ExponentialMovingAverage, ParabolicStopAndReverse
 import pytz
 # endregion
 
@@ -11,13 +12,14 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
     Trades 1 contract of Micro E-mini S&P 500 (MES) on a simple
     20 / 25 EMA cross built on 1000-tick bars, but **only** during
     09 : 30 → 16 : 00 US-Eastern.  Any open position is closed no later
-    than 15 : 58 ET and a $100 stop-loss is attached while a trade is open.
+    than 15 : 58 ET.  SAR-driven trailing stops adapt risk while a trade is open.
     """
 
     FAST, SLOW = 20, 25
     CONTRACTS  = 1
     STOP_RISK  = 100          # $ stop for the WHOLE position
     POINT_VAL  = 5.0          # $ per index-point for one MES contract
+    STOP_PRECISION = 1        # decimal places for stop prices
 
     TZ_NY      = pytz.timezone("America/New_York")
     OPEN_ET    = time(9, 30)
@@ -40,7 +42,7 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         fut.set_filter(timedelta(0), timedelta(days=90))
 
         self.contract   = None
-        self.indicators = {}          # {Symbol: {'fast','slow'}}
+        self.indicators = {}          # {Symbol: {'fast','slow','sar'}}
         self.tick_consolidators = {}
         self.latest_bar = {}
         self.last_bar_time = {}
@@ -54,16 +56,44 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
             return
 
         consolidator = TickConsolidator(1000)
-        consolidator.DataConsolidated += lambda _, bar: self._on_consolidated(symbol, bar)
+
+        def handle_consolidated(sender, bar):
+            try:
+                self._on_consolidated(symbol, bar)
+            except Exception as e:
+                Extensions.set_runtime_error(self, e, f"Tick consolidator handler for {symbol.Value}")
+                raise
+
+        consolidator.DataConsolidated += handle_consolidated
         self.subscription_manager.add_consolidator(symbol, consolidator)
 
-        fast = ExponentialMovingAverage(f"{symbol.value}_fast", self.FAST)
-        slow = ExponentialMovingAverage(f"{symbol.value}_slow", self.SLOW)
+        fast = ExponentialMovingAverage(f"{symbol.Value}_fast", self.FAST)
+        slow = ExponentialMovingAverage(f"{symbol.Value}_slow", self.SLOW)
+        sar  = ParabolicStopAndReverse(f"{symbol.Value}_sar")
 
-        self.register_indicator(symbol, fast, consolidator, lambda bar: bar.close)
-        self.register_indicator(symbol, slow, consolidator, lambda bar: bar.open)
+        def fast_selector(bar: TradeBar):
+            try:
+                return bar.Close
+            except Exception as e:
+                Extensions.set_runtime_error(self, e, f"Fast EMA selector for {symbol.Value}")
+                raise
 
-        self.indicators[symbol] = {"fast": fast, "slow": slow}
+        def slow_selector(bar: TradeBar):
+            try:
+                return bar.Open
+            except Exception as e:
+                Extensions.set_runtime_error(self, e, f"Slow EMA selector for {symbol.Value}")
+                raise
+
+        self.register_indicator(symbol, fast, consolidator, fast_selector)
+        self.register_indicator(symbol, slow, consolidator, slow_selector)
+        try:
+            self.register_indicator(symbol, sar, consolidator)
+        except Exception as e:
+            Extensions.set_runtime_error(self, e, f"PSAR registration for {symbol.Value}")
+            raise
+
+        self.indicators[symbol] = {"fast": fast, "slow": slow, "sar": sar}
         self.tick_consolidators[symbol] = consolidator
         self.last_bar_time[symbol] = None
 
@@ -120,7 +150,7 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         self.last_bar_time[self.contract] = end_time
 
         ind = self.indicators[self.contract]
-        if not (ind["fast"].is_ready and ind["slow"].is_ready):
+        if not (ind["fast"].is_ready and ind["slow"].is_ready and ind["sar"].is_ready):
             return
 
         # current ET
@@ -143,34 +173,68 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         cross_down = self.prev_diff >= 0 > diff
         self.prev_diff = diff
 
+        sar_val = round(ind["sar"].Current.Value, self.STOP_PRECISION)
         qty = self.portfolio[self.contract].quantity
-        # ---------------- exits --------------------
-        if qty > 0 and cross_down:
-            self._cancel_stop()
-            self.liquidate(self.contract)
-            qty = 0
-        elif qty < 0 and cross_up:
-            self._cancel_stop()
-            self.liquidate(self.contract)
-            qty = 0
+
+        # ---------------- exits & stop management --------------------
+        if qty > 0:
+            # trail long stop up to SAR
+            desired_qty = -self.CONTRACTS
+            desired_stop = sar_val
+            if self.stop_ticket is None or self.stop_ticket.quantity != desired_qty:
+                self._cancel_stop()
+                self.stop_ticket = self.stop_market_order(
+                    self.contract, desired_qty, desired_stop, tag="SAR Trailing LONG")
+            else:
+                current_stop = self.stop_ticket.get(OrderField.STOP_PRICE) or desired_stop
+                if desired_stop > current_stop:
+                    update = UpdateOrderFields()
+                    update.stop_price = desired_stop
+                    self.stop_ticket.update(update)
+
+            if cross_down or bar.Close <= sar_val:
+                self._cancel_stop()
+                self.liquidate(self.contract)
+                qty = 0
+
+        elif qty < 0:
+            desired_qty = self.CONTRACTS
+            desired_stop = sar_val
+            if self.stop_ticket is None or self.stop_ticket.quantity != desired_qty:
+                self._cancel_stop()
+                self.stop_ticket = self.stop_market_order(
+                    self.contract, desired_qty, desired_stop, tag="SAR Trailing SHORT")
+            else:
+                current_stop = self.stop_ticket.get(OrderField.STOP_PRICE) or desired_stop
+                if desired_stop < current_stop:
+                    update = UpdateOrderFields()
+                    update.stop_price = desired_stop
+                    self.stop_ticket.update(update)
+
+            if cross_up or bar.Close >= sar_val:
+                self._cancel_stop()
+                self.liquidate(self.contract)
+                qty = 0
+
+        if qty != 0:
+            return
 
         # ---------------- entries -----------------
-        if qty == 0:
-            points_risk = self.STOP_RISK / (self.CONTRACTS * self.POINT_VAL)
+        points_risk = self.STOP_RISK / (self.CONTRACTS * self.POINT_VAL)
 
-            if cross_up:
-                entry = bar.Close
-                stop  = round(entry - points_risk, 2)
-                self.market_order(self.contract,  self.CONTRACTS)
-                self.stop_ticket = self.stop_market_order(
-                    self.contract, -self.CONTRACTS, stop, tag="SL-$100 LONG")
+        if cross_up:
+            entry = bar.Close
+            stop  = round(entry - points_risk, self.STOP_PRECISION)
+            self.market_order(self.contract,  self.CONTRACTS)
+            self.stop_ticket = self.stop_market_order(
+                self.contract, -self.CONTRACTS, min(stop, sar_val), tag="SL-$100 LONG")
 
-            elif cross_down:
-                entry = bar.Close
-                stop  = round(entry + points_risk, 2)
-                self.market_order(self.contract, -self.CONTRACTS)
-                self.stop_ticket = self.stop_market_order(
-                    self.contract,  self.CONTRACTS, stop, tag="SL-$100 SHORT")
+        elif cross_down:
+            entry = bar.Close
+            stop  = round(entry + points_risk, self.STOP_PRECISION)
+            self.market_order(self.contract, -self.CONTRACTS)
+            self.stop_ticket = self.stop_market_order(
+                self.contract,  self.CONTRACTS, max(stop, sar_val), tag="SL-$100 SHORT")
 
     # -------------- util helpers ----------------
     def _on_consolidated(self, symbol: Symbol, bar: TradeBar):
