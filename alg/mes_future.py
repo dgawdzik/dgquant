@@ -9,17 +9,17 @@ import pytz
 
 class MesGoldenDeathCrossRTH(QCAlgorithm):
     """
-    Trades 1 contract of Micro E-mini S&P 500 (MES) on a simple
-    20 / 25 EMA cross built on 1000-tick bars, but **only** during
-    09 : 30 → 16 : 00 US-Eastern.  Any open position is closed no later
-    than 15 : 58 ET.  SAR-driven trailing stops adapt risk while a trade is open.
+    Trades Micro E-mini S&P 500 (MES) on a simple 20 / 25 EMA cross built on 1000-tick bars, but **only** during
+    09 : 30 → 16 : 00 US-Eastern.  Any open position is closed no later than 15 : 58 ET.
+    SAR-driven trailing stops adapt risk while a trade is open.
     """
 
     FAST, SLOW = 20, 25
     CONTRACTS  = 1
     STOP_RISK  = 100          # $ stop for the WHOLE position
     POINT_VAL  = 5.0          # $ per index-point for one MES contract
-    STOP_PRECISION = 1        # decimal places for stop prices
+    MIN_STOP_POINTS = 10      # minimum distance from entry for stops
+    TICK_SIZE  = 0.25         # MES minimum price increment
 
     TZ_NY      = pytz.timezone("America/New_York")
     OPEN_ET    = time(9, 30)
@@ -29,9 +29,9 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
 
     # ---------------- initialise -----------------
     def initialize(self):
-        self.set_start_date(2025, 9, 1)
-        self.set_end_date  (2025, 11, 3)
-        self.set_cash(40_000)
+        self.set_start_date(2025, 11, 3)
+        self.set_end_date  (2025, 11, 5)
+        self.set_cash(60_000)
 
         self.universe_settings.resolution = Resolution.TICK
 
@@ -49,6 +49,8 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         self.prev_diff  = 0.0
         self.stop_ticket = None
         self.last_roll_date = None
+        self.trade_seq = 0
+        self.current_tag = ""
 
     # ---------------- indicator helper -----------
     def _ensure(self, symbol: Symbol):
@@ -159,8 +161,10 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         # force-flat 15:58 or later
         if t_et >= self.FLAT_ET:
             if self.portfolio.invested:
-                self._cancel_stop()
-                self.liquidate(self.contract)
+                qty = self.portfolio[self.contract].quantity
+                if qty != 0:
+                    self._cancel_stop()
+                    self.market_order(self.contract, -qty, tag="Forced Flatten EOD")
             return
 
         # only trade in RTH window
@@ -173,18 +177,21 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         cross_down = self.prev_diff >= 0 > diff
         self.prev_diff = diff
 
-        sar_val = round(ind["sar"].Current.Value, self.STOP_PRECISION)
+        sar_val = self._round_price(ind["sar"].Current.Value)
+        long_margin = self._round_price(bar.Close - self.MIN_STOP_POINTS)
+        short_margin = self._round_price(bar.Close + self.MIN_STOP_POINTS)
         qty = self.portfolio[self.contract].quantity
 
         # ---------------- exits & stop management --------------------
         if qty > 0:
             # trail long stop up to SAR
             desired_qty = -self.CONTRACTS
-            desired_stop = sar_val
+            desired_stop = min(sar_val, long_margin)
             if self.stop_ticket is None or self.stop_ticket.quantity != desired_qty:
                 self._cancel_stop()
                 self.stop_ticket = self.stop_market_order(
-                    self.contract, desired_qty, desired_stop, tag="SAR Trailing LONG")
+                    self.contract, desired_qty, desired_stop,
+                    tag=f"STOP LOSS adjusted by SAR Trailing LONG #{self.current_tag or 'NA'}")
             else:
                 current_stop = self.stop_ticket.get(OrderField.STOP_PRICE) or desired_stop
                 if desired_stop > current_stop:
@@ -194,16 +201,17 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
 
             if cross_down or bar.Close <= sar_val:
                 self._cancel_stop()
-                self.liquidate(self.contract)
+                self.market_order(self.contract, -qty, tag=f"SAR Exit LONG #{self.current_tag or 'NA'}")
                 qty = 0
 
         elif qty < 0:
             desired_qty = self.CONTRACTS
-            desired_stop = sar_val
+            desired_stop = max(sar_val, short_margin)
             if self.stop_ticket is None or self.stop_ticket.quantity != desired_qty:
                 self._cancel_stop()
                 self.stop_ticket = self.stop_market_order(
-                    self.contract, desired_qty, desired_stop, tag="SAR Trailing SHORT")
+                    self.contract, desired_qty, desired_stop,
+                    tag=f"STOP LOSS adjusted by SAR Trailing SHORT #{self.current_tag or 'NA'}")
             else:
                 current_stop = self.stop_ticket.get(OrderField.STOP_PRICE) or desired_stop
                 if desired_stop < current_stop:
@@ -213,32 +221,44 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
 
             if cross_up or bar.Close >= sar_val:
                 self._cancel_stop()
-                self.liquidate(self.contract)
+                self.market_order(self.contract, -qty, tag=f"SAR Exit SHORT #{self.current_tag or 'NA'}")
                 qty = 0
 
         if qty != 0:
             return
 
         # ---------------- entries -----------------
-        points_risk = self.STOP_RISK / (self.CONTRACTS * self.POINT_VAL)
+        points_risk = max(self.STOP_RISK / (self.CONTRACTS * self.POINT_VAL),
+                          self.MIN_STOP_POINTS)
 
         if cross_up:
+            self.trade_seq += 1
+            self.current_tag = f"{self.trade_seq}"
             entry = bar.Close
-            stop  = round(entry - points_risk, self.STOP_PRECISION)
-            self.market_order(self.contract,  self.CONTRACTS)
+            fixed_long_stop = self._round_price(entry - points_risk)
+            sar_cap = min(sar_val, self._round_price(entry - self.MIN_STOP_POINTS))
+            stop = min(fixed_long_stop, sar_cap)
+            self.market_order(self.contract,  self.CONTRACTS, tag=f"ENTRY LONG #{self.current_tag}")
             self.stop_ticket = self.stop_market_order(
-                self.contract, -self.CONTRACTS, min(stop, sar_val), tag="SL-$100 LONG")
+                self.contract, -self.CONTRACTS, stop, tag=f"STOP LOSS/SAR LONG #{self.current_tag}")
 
         elif cross_down:
+            self.trade_seq += 1
+            self.current_tag = f"{self.trade_seq}"
             entry = bar.Close
-            stop  = round(entry + points_risk, self.STOP_PRECISION)
-            self.market_order(self.contract, -self.CONTRACTS)
+            fixed_short_stop = self._round_price(entry + points_risk)
+            sar_floor = max(sar_val, self._round_price(entry + self.MIN_STOP_POINTS))
+            stop = max(fixed_short_stop, sar_floor)
+            self.market_order(self.contract, -self.CONTRACTS, tag=f"ENTRY SHORT #{self.current_tag}")
             self.stop_ticket = self.stop_market_order(
-                self.contract,  self.CONTRACTS, max(stop, sar_val), tag="SL-$100 SHORT")
+                self.contract,  self.CONTRACTS, stop, tag=f"STOP LOSS/SAR SHORT #{self.current_tag}")
 
     # -------------- util helpers ----------------
     def _on_consolidated(self, symbol: Symbol, bar: TradeBar):
         self.latest_bar[symbol] = bar
+
+    def _round_price(self, price: float) -> float:
+        return round(price / self.TICK_SIZE) * self.TICK_SIZE
 
     def _cancel_stop(self):
         if self.stop_ticket and self.stop_ticket.status in (OrderStatus.NEW,
