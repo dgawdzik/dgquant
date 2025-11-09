@@ -3,7 +3,11 @@ from datetime import time, timedelta
 from AlgorithmImports import *
 from QuantConnect import Extensions
 from QuantConnect.Data.Consolidators import TickConsolidator
-from QuantConnect.Indicators import ExponentialMovingAverage, ParabolicStopAndReverse
+from QuantConnect.Indicators import (
+    ExponentialMovingAverage,
+    ParabolicStopAndReverse,
+    AverageDirectionalIndex
+)
 import pytz
 # endregion
 
@@ -20,6 +24,8 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
     POINT_VAL  = 5.0          # $ per index-point for one MES contract
     MIN_STOP_POINTS = 10      # minimum distance from entry for stops
     TICK_SIZE  = 0.25         # MES minimum price increment
+    ADX_PERIOD = 14
+    ADX_THRESHOLD = 18
 
     TZ_NY      = pytz.timezone("America/New_York")
     OPEN_ET    = time(9, 30)
@@ -72,6 +78,7 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         fast = ExponentialMovingAverage(f"{symbol.Value}_fast", self.FAST)
         slow = ExponentialMovingAverage(f"{symbol.Value}_slow", self.SLOW)
         sar  = ParabolicStopAndReverse(f"{symbol.Value}_sar")
+        adx  = AverageDirectionalIndex(f"{symbol.Value}_adx", self.ADX_PERIOD)
 
         def fast_selector(bar: TradeBar):
             try:
@@ -95,7 +102,13 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
             Extensions.set_runtime_error(self, e, f"PSAR registration for {symbol.Value}")
             raise
 
-        self.indicators[symbol] = {"fast": fast, "slow": slow, "sar": sar}
+        try:
+            self.register_indicator(symbol, adx, consolidator)
+        except Exception as e:
+            Extensions.set_runtime_error(self, e, f"ADX registration for {symbol.Value}")
+            raise
+
+        self.indicators[symbol] = {"fast": fast, "slow": slow, "sar": sar, "adx": adx}
         self.tick_consolidators[symbol] = consolidator
         self.last_bar_time[symbol] = None
 
@@ -152,7 +165,8 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         self.last_bar_time[self.contract] = end_time
 
         ind = self.indicators[self.contract]
-        if not (ind["fast"].is_ready and ind["slow"].is_ready and ind["sar"].is_ready):
+        if not (ind["fast"].is_ready and ind["slow"].is_ready and
+                ind["sar"].is_ready and ind["adx"].is_ready):
             return
 
         # current ET
@@ -176,6 +190,7 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         cross_up   = self.prev_diff <= 0 < diff
         cross_down = self.prev_diff >= 0 > diff
         self.prev_diff = diff
+        trend_strength = ind["adx"].Current.Value
 
         sar_val = self._round_price(ind["sar"].Current.Value)
         long_margin = self._round_price(bar.Close - self.MIN_STOP_POINTS)
@@ -231,7 +246,7 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         points_risk = max(self.STOP_RISK / (self.CONTRACTS * self.POINT_VAL),
                           self.MIN_STOP_POINTS)
 
-        if cross_up:
+        if trend_strength >= self.ADX_THRESHOLD and cross_up:
             self.trade_seq += 1
             self.current_tag = f"{self.trade_seq}"
             entry = bar.Close
@@ -242,7 +257,7 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
             self.stop_ticket = self.stop_market_order(
                 self.contract, -self.CONTRACTS, stop, tag=f"STOP LOSS/SAR LONG #{self.current_tag}")
 
-        elif cross_down:
+        elif trend_strength >= self.ADX_THRESHOLD and cross_down:
             self.trade_seq += 1
             self.current_tag = f"{self.trade_seq}"
             entry = bar.Close
