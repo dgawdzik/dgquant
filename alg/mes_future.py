@@ -16,10 +16,11 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
 
     FAST, SLOW = 20, 25
     CONTRACTS  = 1
-    STOP_RISK  = 100          # $ stop for the WHOLE position
+    STOP_RISK  = 50           # $ stop for the WHOLE position
     POINT_VAL  = 5.0          # $ per index-point for one MES contract
     MIN_STOP_POINTS = 10      # minimum distance from entry for stops
     TICK_SIZE  = 0.25         # MES minimum price increment
+    CROSS_BUFFER_TICKS = 2    # ticks beyond crossover to confirm trend
 
     TZ_NY      = pytz.timezone("America/New_York")
     OPEN_ET    = time(9, 30)
@@ -29,8 +30,8 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
 
     # ---------------- initialise -----------------
     def initialize(self):
-        self.set_start_date(2025, 11, 3)
-        self.set_end_date  (2025, 11, 5)
+        self.set_start_date(2025, 11, 5)
+        self.set_end_date  (2025, 11, 6)
         self.set_cash(60_000)
 
         self.universe_settings.resolution = Resolution.TICK
@@ -51,6 +52,20 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
         self.last_roll_date = None
         self.trade_seq = 0
         self.current_tag = ""
+        self.current_stop_price = None
+        self.awaiting_flat = False
+
+        price_chart = Chart("MES")
+        price_chart.add_series(Series("Price", SeriesType.LINE, "", Color.Black))
+        price_chart.add_series(Series("Fast EMA", SeriesType.LINE, "", Color.LightGreen))
+        price_chart.add_series(Series("Slow EMA", SeriesType.LINE, "", Color.LightCoral))
+        price_chart.add_series(Series("SAR", SeriesType.LINE))
+        price_chart.add_series(Series("Stop", SeriesType.LINE, "", Color.Blue))
+        price_chart.add_series(Series("Long Entry", SeriesType.SCATTER, "", Color.DarkGreen, ScatterMarkerSymbol.TRIANGLE))
+        price_chart.add_series(Series("Short Entry", SeriesType.SCATTER, "", Color.Red, ScatterMarkerSymbol.TRIANGLE_DOWN))
+        price_chart.add_series(Series("Long Exit", SeriesType.SCATTER, "", Color.Red, ScatterMarkerSymbol.SQUARE))
+        price_chart.add_series(Series("Short Exit", SeriesType.SCATTER, "", Color.DarkGreen, ScatterMarkerSymbol.SQUARE))
+        self.add_chart(price_chart)
 
     # ---------------- indicator helper -----------
     def _ensure(self, symbol: Symbol):
@@ -164,7 +179,10 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
                 qty = self.portfolio[self.contract].quantity
                 if qty != 0:
                     self._cancel_stop()
+                    exit_series = "Long Exit" if qty > 0 else "Short Exit"
                     self.market_order(self.contract, -qty, tag="Forced Flatten EOD")
+                    self.plot("MES", exit_series, bar.Close)
+                    self.awaiting_flat = True
             return
 
         # only trade in RTH window
@@ -173,14 +191,28 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
 
         # ---------------- EMA cross ----------------
         diff = ind["fast"].Current.Value - ind["slow"].Current.Value
-        cross_up   = self.prev_diff <= 0 < diff
-        cross_down = self.prev_diff >= 0 > diff
+        band = self.CROSS_BUFFER_TICKS * self.TICK_SIZE
+        cross_up   = self.prev_diff <= band and diff > band
+        cross_down = self.prev_diff >= -band and diff < -band
         self.prev_diff = diff
 
         sar_val = self._round_price(ind["sar"].Current.Value)
         long_margin = self._round_price(bar.Close - self.MIN_STOP_POINTS)
         short_margin = self._round_price(bar.Close + self.MIN_STOP_POINTS)
         qty = self.portfolio[self.contract].quantity
+
+        if self.awaiting_flat:
+            if qty == 0:
+                self.awaiting_flat = False
+            else:
+                return
+
+        self.plot("MES", "Price", bar.Close)
+        self.plot("MES", "Fast EMA", ind["fast"].Current.Value)
+        self.plot("MES", "Slow EMA", ind["slow"].Current.Value)
+        self.plot("MES", "SAR", sar_val)
+        if self.current_stop_price is not None:
+            self.plot("MES", "Stop", self.current_stop_price)
 
         # ---------------- exits & stop management --------------------
         if qty > 0:
@@ -192,17 +224,24 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
                 self.stop_ticket = self.stop_market_order(
                     self.contract, desired_qty, desired_stop,
                     tag=f"STOP LOSS adjusted by SAR Trailing LONG #{self.current_tag or 'NA'}")
+                self.current_stop_price = desired_stop
+                self.plot("MES", "Stop", desired_stop)
             else:
                 current_stop = self.stop_ticket.get(OrderField.STOP_PRICE) or desired_stop
                 if desired_stop > current_stop:
                     update = UpdateOrderFields()
                     update.stop_price = desired_stop
                     self.stop_ticket.update(update)
+                    self.current_stop_price = desired_stop
+                    self.plot("MES", "Stop", desired_stop)
 
             if cross_down or bar.Close <= sar_val:
                 self._cancel_stop()
+                exit_series = "Long Exit"
                 self.market_order(self.contract, -qty, tag=f"SAR Exit LONG #{self.current_tag or 'NA'}")
-                qty = 0
+                self.plot("MES", exit_series, bar.Close)
+                self.awaiting_flat = True
+                return
 
         elif qty < 0:
             desired_qty = self.CONTRACTS
@@ -212,19 +251,26 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
                 self.stop_ticket = self.stop_market_order(
                     self.contract, desired_qty, desired_stop,
                     tag=f"STOP LOSS adjusted by SAR Trailing SHORT #{self.current_tag or 'NA'}")
+                self.current_stop_price = desired_stop
+                self.plot("MES", "Stop", desired_stop)
             else:
                 current_stop = self.stop_ticket.get(OrderField.STOP_PRICE) or desired_stop
                 if desired_stop < current_stop:
                     update = UpdateOrderFields()
                     update.stop_price = desired_stop
                     self.stop_ticket.update(update)
+                    self.current_stop_price = desired_stop
+                    self.plot("MES", "Stop", desired_stop)
 
             if cross_up or bar.Close >= sar_val:
                 self._cancel_stop()
+                exit_series = "Short Exit"
                 self.market_order(self.contract, -qty, tag=f"SAR Exit SHORT #{self.current_tag or 'NA'}")
-                qty = 0
+                self.plot("MES", exit_series, bar.Close)
+                self.awaiting_flat = True
+                return
 
-        if qty != 0:
+        if qty != 0 or self.awaiting_flat:
             return
 
         # ---------------- entries -----------------
@@ -241,6 +287,9 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
             self.market_order(self.contract,  self.CONTRACTS, tag=f"ENTRY LONG #{self.current_tag}")
             self.stop_ticket = self.stop_market_order(
                 self.contract, -self.CONTRACTS, stop, tag=f"STOP LOSS/SAR LONG #{self.current_tag}")
+            self.current_stop_price = stop
+            self.plot("MES", "Long Entry", entry)
+            self.plot("MES", "Stop", stop)
 
         elif cross_down:
             self.trade_seq += 1
@@ -252,6 +301,9 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
             self.market_order(self.contract, -self.CONTRACTS, tag=f"ENTRY SHORT #{self.current_tag}")
             self.stop_ticket = self.stop_market_order(
                 self.contract,  self.CONTRACTS, stop, tag=f"STOP LOSS/SAR SHORT #{self.current_tag}")
+            self.current_stop_price = stop
+            self.plot("MES", "Short Entry", entry)
+            self.plot("MES", "Stop", stop)
 
     # -------------- util helpers ----------------
     def _on_consolidated(self, symbol: Symbol, bar: TradeBar):
@@ -266,6 +318,7 @@ class MesGoldenDeathCrossRTH(QCAlgorithm):
                                                             OrderStatus.PARTIALLY_FILLED):
             self.stop_ticket.cancel()
         self.stop_ticket = None
+        self.current_stop_price = None
 
     def on_end_of_algorithm(self):
         self._cancel_stop()
