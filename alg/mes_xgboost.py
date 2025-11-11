@@ -30,7 +30,7 @@ class MesXGBoost(QCAlgorithm):
     MIN_TRAIN_DAYS = 25          # days of data to accumulate before trading
     CONTRACTS = 1                # number of MES contracts to trade
     PREV_30M_DAYS = 10
-    MAX_30M_SLOTS = 20
+    MAX_30M_SLOTS = 10
 
     FLAT_ET = time(15, 58)       # force flat no later than 15:58 ET
 
