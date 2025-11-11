@@ -22,11 +22,15 @@ class MesXGBoost(QCAlgorithm):
     LABEL_HORIZON_MIN = 5        # forward minutes to build the classification label
     MIN_TRAIN_SAMPLES = 200      # minimum samples needed before the first fit
     MAX_TRAIN_SAMPLES = 3000     # rolling cap to avoid unbounded memory
-    PROB_LONG = 0.80             # probability threshold to enter long
-    PROB_SHORT = 0.20            # probability threshold to enter short
+    PROB_LONG_ENTER = 0.80       # probability threshold to enter long
+    PROB_LONG_EXIT  = 0.60       # probability threshold to stay long
+    PROB_SHORT_ENTER = 0.20      # probability threshold to enter short
+    PROB_SHORT_EXIT  = 0.40      # probability threshold to stay short
     RETURN_THRESHOLD = 0.0       # label = 1 if future return > threshold else 0
     MIN_TRAIN_DAYS = 25          # days of data to accumulate before trading
     CONTRACTS = 1                # number of MES contracts to trade
+    PREV_30M_DAYS = 10
+    MAX_30M_SLOTS = 20
 
     FLAT_ET = time(15, 58)       # force flat no later than 15:58 ET
 
@@ -62,6 +66,8 @@ class MesXGBoost(QCAlgorithm):
         self.prev_day_high = None
         self.prev_day_low = None
 
+        self.prev_day_30m = deque(maxlen=self.PREV_30M_DAYS)
+        self.current_day_30m: list[Tuple[float, float, float, float, float]] = []
         self.last_5m_bar: TradeBar | None = None
 
         # technical indicators
@@ -141,6 +147,11 @@ class MesXGBoost(QCAlgorithm):
         self.subscription_manager.add_consolidator(symbol, con5)
         self.consolidators.append((symbol, con5))
 
+        con30 = TradeBarConsolidator(timedelta(minutes=30))
+        con30.DataConsolidated += lambda sender, bar: self._record_30m_bar(bar)
+        self.subscription_manager.add_consolidator(symbol, con30)
+        self.consolidators.append((symbol, con30))
+
         daily = self.consolidate(symbol, Resolution.Daily,
                                  lambda bar: self._on_daily(symbol, bar))
         self.consolidators.append((symbol, daily))
@@ -160,21 +171,29 @@ class MesXGBoost(QCAlgorithm):
             return
         history = self.History(symbol, timedelta(days=self.MIN_TRAIN_DAYS + 5), Resolution.MINUTE)
         if history.empty:
-            self.pretraining_done = True
             return
         if isinstance(history.index, pd.MultiIndex):
             symbols = history.index.get_level_values(0)
             if symbol not in symbols:
-                self.pretraining_done = True
                 return
             df = history.xs(symbol)
         else:
             df = history
         if df.empty:
+            return
+        first_time = df.index[0] if hasattr(df.index, "__getitem__") else None
+        last_time = df.index[-1] if hasattr(df.index, "__getitem__") else None
+        if not first_time or not last_time:
+            return
+        span_days = (last_time - first_time).days
+        if span_days < self.MIN_TRAIN_DAYS:
+            self.Log(f"Pretraining skipped: only {span_days} days history; need {self.MIN_TRAIN_DAYS}.")
             self.pretraining_done = True
             return
-        temp_con = TradeBarConsolidator(timedelta(minutes=5))
-        temp_con.DataConsolidated += lambda sender, bar: self._process_primary_bar(bar, is_pretrain=True)
+        temp5 = TradeBarConsolidator(timedelta(minutes=5))
+        temp5.DataConsolidated += lambda sender, bar: self._process_primary_bar(bar, is_pretrain=True)
+        temp30 = TradeBarConsolidator(timedelta(minutes=30))
+        temp30.DataConsolidated += lambda sender, bar: self._record_30m_bar(bar, is_pretrain=True)
         for time, row in df.iterrows():
             bar = TradeBar(
                 time=time,
@@ -186,12 +205,17 @@ class MesXGBoost(QCAlgorithm):
                 volume=row.volume,
                 period=timedelta(minutes=1)
             )
-            temp_con.Update(bar)
-        temp_con.Dispose()
+            temp5.Update(bar)
+            temp30.Update(bar)
+        temp5.Dispose()
+        temp30.Dispose()
         self.pending_labels.clear()
+        prev_unlock = self.training_unlock_time
         self._maybe_train_model(force=True)
         if self.model_trained:
-            self.training_unlock_time = self.StartDate
+            self.training_unlock_time = min(self.training_unlock_time, self.StartDate)
+        else:
+            self.training_unlock_time = prev_unlock
         self.pretraining_done = True
 
     def _remove_consolidators(self) -> None:
@@ -203,6 +227,13 @@ class MesXGBoost(QCAlgorithm):
         if tf == "5m":
             self.last_5m_bar = bar
 
+    def _record_30m_bar(self, bar: TradeBar, is_pretrain: bool = False) -> None:
+        vwap = (bar.Open + bar.High + bar.Low + bar.Close) / 4 if bar.Volume == 0 else bar.Close
+        time_feats = self._time_features(bar.EndTime)
+        slot = (bar.Open, bar.Close, bar.High, bar.Low, vwap, time_feats[0], time_feats[1])
+        self.current_day_30m.append(slot)
+        if len(self.current_day_30m) > self.MAX_30M_SLOTS:
+            self.current_day_30m.pop(0)
     def _on_daily(self, symbol: Symbol, bar: TradeBar) -> None:
         # use most recent completed session for next-day normalization
         self.prev_day_high = bar.High
@@ -210,8 +241,16 @@ class MesXGBoost(QCAlgorithm):
 
     def _reset_session_if_needed(self, bar_time: datetime) -> None:
         date = bar_time.astimezone(pytz.timezone("America/New_York")).date()
+        if self.session_date is None:
+            self.session_date = date
+            self.vwap_volume = 0.0
+            self.vwap_pv = 0.0
+            return
         if self.session_date == date:
             return
+        if self.current_day_30m:
+            self.prev_day_30m.append(list(self.current_day_30m))
+            self.current_day_30m = []
         self.session_date = date
         self.vwap_volume = 0.0
         self.vwap_pv = 0.0
@@ -265,11 +304,8 @@ class MesXGBoost(QCAlgorithm):
         self.prev_macd_hist = macd_hist
         self.prev_rsi_val = rsi_val
 
-        minutes_since_midnight = bar.EndTime.astimezone(pytz.timezone("America/New_York")).hour * 60 + \
-                                 bar.EndTime.astimezone(pytz.timezone("America/New_York")).minute
-        cycle = 2 * np.pi * minutes_since_midnight / (24 * 60)
-        time_sin = np.sin(cycle)
-        time_cos = np.cos(cycle)
+        time_features = self._time_features(bar.EndTime)
+        thirty_min_features = self._thirty_min_features()
 
         features = [
             ret_1m,
@@ -286,11 +322,39 @@ class MesXGBoost(QCAlgorithm):
             rsi_slope,
             atr_ratio,
             sar_distance,
-            time_sin,
-            time_cos
         ]
-
+        features.extend(time_features)
+        features.extend(thirty_min_features)
         return features if all(np.isfinite(f) for f in features) else None
+
+    def _time_features(self, end_time: datetime) -> list[float]:
+        et = end_time.astimezone(pytz.timezone("America/New_York"))
+        minutes_since_midnight = et.hour * 60 + et.minute
+        cycle = 2 * np.pi * minutes_since_midnight / (24 * 60)
+        return [np.sin(cycle), np.cos(cycle)]
+
+    def _thirty_min_features(self) -> list[float]:
+        vector: list[float] = []
+        prev_days = list(self.prev_day_30m)
+        while len(prev_days) < self.PREV_30M_DAYS:
+            prev_days.insert(0, [])
+        prev_days = prev_days[-self.PREV_30M_DAYS:]
+        for day_slots in prev_days:
+            vector.extend(self._flatten_slots(day_slots))
+        vector.extend(self._flatten_slots(self.current_day_30m))
+        return vector
+
+    def _flatten_slots(self, slots: list[Tuple[float, float, float, float, float, float, float]]) -> list[float]:
+        result: list[float] = []
+        slots_to_use = slots[-self.MAX_30M_SLOTS:]
+        count = 0
+        for slot in slots_to_use:
+            result.extend(slot)
+            count += 1
+        while count < self.MAX_30M_SLOTS:
+            result.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            count += 1
+        return result
 
     def _lookback_return(self, minutes: int) -> float:
         if len(self.price_history) <= minutes:
@@ -354,14 +418,22 @@ class MesXGBoost(QCAlgorithm):
                 self.Liquidate(self.contract_symbol, tag="EOD Flatten")
             return
 
-        target_qty = 0
-        if proba >= self.PROB_LONG:
-            target_qty = self.CONTRACTS
-        elif proba <= self.PROB_SHORT:
-            target_qty = -self.CONTRACTS
-
         holding = self.Portfolio[self.contract_symbol].Quantity
-        if holding == target_qty:
+        target_qty = holding
+
+        if holding == 0:
+            if proba >= self.PROB_LONG_ENTER:
+                target_qty = self.CONTRACTS
+            elif proba <= self.PROB_SHORT_ENTER:
+                target_qty = -self.CONTRACTS
+        elif holding > 0:
+            if proba < self.PROB_LONG_EXIT:
+                target_qty = 0
+        elif holding < 0:
+            if proba > self.PROB_SHORT_EXIT:
+                target_qty = 0
+
+        if target_qty == holding:
             return
         if target_qty == 0:
             self.Liquidate(self.contract_symbol, tag="Flat ML signal")
