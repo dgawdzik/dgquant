@@ -19,11 +19,11 @@ class MesXGBoost(QCAlgorithm):
     short-horizon direction from engineered price-structure features.
     """
 
-    LABEL_HORIZON_MIN = 5        # forward minutes to build the classification label
+    LABEL_HORIZON_MIN = 30       # forward minutes to build the classification label
     MIN_TRAIN_SAMPLES = 200      # minimum samples needed before the first fit
     MAX_TRAIN_SAMPLES = 3000     # rolling cap to avoid unbounded memory
-    PROB_LONG = 0.55             # probability threshold to enter long
-    PROB_SHORT = 0.45            # probability threshold to enter short
+    PROB_LONG = 0.85             # probability threshold to enter long
+    PROB_SHORT = 0.75            # probability threshold to enter short
     RETURN_THRESHOLD = 0.0       # label = 1 if future return > threshold else 0
     MIN_TRAIN_DAYS = 25          # days of data to accumulate before trading
     CONTRACTS = 1                # number of MES contracts to trade
@@ -62,7 +62,6 @@ class MesXGBoost(QCAlgorithm):
         self.prev_day_high = None
         self.prev_day_low = None
 
-        self.last_5m_bar: TradeBar | None = None
         self.last_30m_bar: TradeBar | None = None
 
         # technical indicators
@@ -94,36 +93,7 @@ class MesXGBoost(QCAlgorithm):
 
     # ---------------- data loop -----------------
     def on_data(self, slice: Slice) -> None:
-        if self.is_warming_up:
-            return
-
         self._ensure_contract(slice)
-        if self.contract_symbol is None:
-            return
-
-        bar = slice.bars.get(self.contract_symbol)
-        if bar is None:
-            return
-
-        self._reset_session_if_needed(bar.EndTime)
-        self._update_vwap(bar)
-        features = self._build_features(bar)
-
-        self._update_pending_labels(bar)
-        self._maybe_train_model()
-
-        if features and self.model_trained:
-            proba = self.model.predict_proba(np.array(features).reshape(1, -1))[0][1]
-            self.plot("Model", "ProbLong", proba)
-            self._trade_from_prob(proba, bar)
-
-        if features:
-            target_time = bar.EndTime + timedelta(minutes=self.LABEL_HORIZON_MIN)
-            self.pending_labels.append({
-                "features": features,
-                "price": bar.Close,
-                "target_time": target_time
-            })
 
     # --------------- helpers --------------------
     def _ensure_contract(self, slice: Slice) -> None:
@@ -161,13 +131,13 @@ class MesXGBoost(QCAlgorithm):
     def _setup_consolidators(self, symbol: Symbol) -> None:
         self._remove_consolidators()
 
-        con5 = TradeBarConsolidator(timedelta(minutes=5))
-        con5.DataConsolidated += lambda sender, bar: self._on_consolidated("5m", bar)
-        self.subscription_manager.add_consolidator(symbol, con5)
-        self.consolidators.append((symbol, con5))
-
         con30 = TradeBarConsolidator(timedelta(minutes=30))
-        con30.DataConsolidated += lambda sender, bar: self._on_consolidated("30m", bar)
+
+        def handle_30m(sender, bar):
+            self._on_consolidated("30m", bar)
+            self._process_primary_bar(bar)
+
+        con30.DataConsolidated += handle_30m
         self.subscription_manager.add_consolidator(symbol, con30)
         self.consolidators.append((symbol, con30))
 
@@ -203,6 +173,8 @@ class MesXGBoost(QCAlgorithm):
         if df.empty:
             self.pretraining_done = True
             return
+        temp_con = TradeBarConsolidator(timedelta(minutes=30))
+        temp_con.DataConsolidated += lambda sender, bar: self._process_primary_bar(bar, is_pretrain=True)
         for time, row in df.iterrows():
             bar = TradeBar(
                 time=time,
@@ -214,17 +186,8 @@ class MesXGBoost(QCAlgorithm):
                 volume=row.volume,
                 period=timedelta(minutes=1)
             )
-            self._reset_session_if_needed(bar.EndTime)
-            self._update_vwap(bar)
-            features = self._build_features(bar)
-            self._update_pending_labels(bar)
-            if features:
-                target_time = bar.EndTime + timedelta(minutes=self.LABEL_HORIZON_MIN)
-                self.pending_labels.append({
-                    "features": features,
-                    "price": bar.Close,
-                    "target_time": target_time
-                })
+            temp_con.Update(bar)
+        temp_con.Dispose()
         self.pending_labels.clear()
         self._maybe_train_model(force=True)
         if self.model_trained:
@@ -237,9 +200,7 @@ class MesXGBoost(QCAlgorithm):
         self.consolidators.clear()
 
     def _on_consolidated(self, tf: str, bar: TradeBar) -> None:
-        if tf == "5m":
-            self.last_5m_bar = bar
-        elif tf == "30m":
+        if tf == "30m":
             self.last_30m_bar = bar
 
     def _on_daily(self, symbol: Symbol, bar: TradeBar) -> None:
@@ -366,7 +327,7 @@ class MesXGBoost(QCAlgorithm):
     def _maybe_train_model(self, force: bool = False) -> None:
         if not self.model or len(self.training_labels) < self.MIN_TRAIN_SAMPLES:
             return
-        if not force and self.time.minute % 15 != 0:
+        if not force and self.time.minute % 30 != 0:
             return
         X = np.array(self.training_features, dtype=float)
         y = np.array(self.training_labels, dtype=float)
@@ -402,3 +363,23 @@ class MesXGBoost(QCAlgorithm):
     # -------------- lifecycle -------------------
     def on_end_of_algorithm(self) -> None:
         self._remove_consolidators()
+    def _process_primary_bar(self, bar: TradeBar, is_pretrain: bool = False) -> None:
+        if not is_pretrain and self.is_warming_up:
+            return
+        self._reset_session_if_needed(bar.EndTime)
+        self._update_vwap(bar)
+        features = self._build_features(bar)
+        self._update_pending_labels(bar)
+        if not is_pretrain:
+            self._maybe_train_model()
+            if features and self.model_trained:
+                proba = self.model.predict_proba(np.array(features).reshape(1, -1))[0][1]
+                self.plot("Model", "ProbLong", proba)
+                self._trade_from_prob(proba, bar)
+        if features:
+            target_time = bar.EndTime + timedelta(minutes=self.LABEL_HORIZON_MIN)
+            self.pending_labels.append({
+                "features": features,
+                "price": bar.Close,
+                "target_time": target_time
+            })
