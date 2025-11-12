@@ -1,6 +1,6 @@
 # region imports
 from AlgorithmImports import *
-from datetime import timedelta
+from datetime import datetime, timedelta, time
 from collections import deque
 from typing import Tuple
 import numpy as np
@@ -30,13 +30,14 @@ class MesXGBoost(QCAlgorithm):
     MIN_TRAIN_DAYS = 25          # days of data to accumulate before trading
     CONTRACTS = 1                # number of MES contracts to trade
     PREV_30M_DAYS = 10
-    MAX_30M_SLOTS = 10
+    MAX_30M_SLOTS = 20
+    ROLL_DAYS_BEFORE_EXPIRY = 8  # switch to next contract this many days before expiry
 
     FLAT_ET = time(15, 58)       # force flat no later than 15:58 ET
 
     def initialize(self) -> None:
         self.set_start_date(2025, 10, 1)
-        self.set_end_date(2025, 11, 6)
+        self.set_end_date(2025, 11, 10)
         self.set_cash(75_000)
 
         self.universe_settings.resolution = Resolution.MINUTE
@@ -48,6 +49,7 @@ class MesXGBoost(QCAlgorithm):
             extended_market_hours=True
         )
         future.set_filter(timedelta(0), timedelta(days=90))
+        self.future_chain_symbol = future.symbol
 
         self.contract_symbol: Symbol | None = None
         self.last_roll_date = None
@@ -55,6 +57,7 @@ class MesXGBoost(QCAlgorithm):
 
         self.price_history = deque(maxlen=60)       # 1-minute closes
         self.return_history = deque(maxlen=120)     # 1-minute returns for vol/skew/kurt
+        self.volume_history = deque(maxlen=60)      # 1-minute volumes for normalization
         self.pending_labels = deque()
         self.training_features: list[list[float]] = []
         self.training_labels: list[int] = []
@@ -113,10 +116,15 @@ class MesXGBoost(QCAlgorithm):
             return
 
         front = None
+        roll_cutoff = current_date + timedelta(days=self.ROLL_DAYS_BEFORE_EXPIRY)
         for chain in slice.future_chains.values():
             if not chain.Contracts:
                 continue
-            front = sorted(chain.Contracts.values(), key=lambda c: c.Expiry)[0]
+            sorted_contracts = sorted(chain.Contracts.values(), key=lambda c: c.Expiry)
+            front = next(
+                (contract for contract in sorted_contracts if contract.Expiry.date() > roll_cutoff),
+                sorted_contracts[0]
+            )
             break
 
         if front is None:
@@ -169,40 +177,34 @@ class MesXGBoost(QCAlgorithm):
     def _run_pretraining(self, symbol: Symbol) -> None:
         if self.pretraining_done or self.model is None:
             return
-        history = self.History(symbol, timedelta(days=self.MIN_TRAIN_DAYS + 5), Resolution.MINUTE)
-        if history.empty:
-            return
-        if isinstance(history.index, pd.MultiIndex):
-            symbols = history.index.get_level_values(0)
-            if symbol not in symbols:
-                return
-            df = history.xs(symbol)
-        else:
-            df = history
-        if df.empty:
-            return
-        first_time = df.index[0] if hasattr(df.index, "__getitem__") else None
-        last_time = df.index[-1] if hasattr(df.index, "__getitem__") else None
-        if not first_time or not last_time:
-            return
-        span_days = (last_time - first_time).days
-        if span_days < self.MIN_TRAIN_DAYS:
-            self.Log(f"Pretraining skipped: only {span_days} days history; need {self.MIN_TRAIN_DAYS}.")
+        
+        df = self._build_rolling_history_dataframe()
+        if df is None or df.empty:
+            self.Log("Pretraining skipped: unable to assemble rolling history.")
             self.pretraining_done = True
             return
         temp5 = TradeBarConsolidator(timedelta(minutes=5))
         temp5.DataConsolidated += lambda sender, bar: self._process_primary_bar(bar, is_pretrain=True)
         temp30 = TradeBarConsolidator(timedelta(minutes=30))
         temp30.DataConsolidated += lambda sender, bar: self._record_30m_bar(bar, is_pretrain=True)
-        for time, row in df.iterrows():
+        for time_index, row in df.iterrows():
+            bar_time = self._coerce_datetime(time_index)
+            if bar_time is None:
+                continue
+            bar_symbol = self._extract_symbol_from_index(time_index, symbol)
+            open_val = float(row.open)
+            high_val = float(row.high)
+            low_val = float(row.low)
+            close_val = float(row.close)
+            volume_val = float(row.volume)
             bar = TradeBar(
-                time=time,
-                symbol=symbol,
-                open=row.open,
-                high=row.high,
-                low=row.low,
-                close=row.close,
-                volume=row.volume,
+                time=bar_time,
+                symbol=bar_symbol,
+                open=open_val,
+                high=high_val,
+                low=low_val,
+                close=close_val,
+                volume=volume_val,
                 period=timedelta(minutes=1)
             )
             temp5.Update(bar)
@@ -217,6 +219,7 @@ class MesXGBoost(QCAlgorithm):
         else:
             self.training_unlock_time = prev_unlock
         self.pretraining_done = True
+        self.Log("Pretraining finished; live/paper training now active.")
 
     def _remove_consolidators(self) -> None:
         for symbol, consolidator in self.consolidators:
@@ -255,13 +258,87 @@ class MesXGBoost(QCAlgorithm):
         self.vwap_volume = 0.0
         self.vwap_pv = 0.0
 
+    def _coerce_datetime(self, index_value) -> datetime | None:
+        candidates = list(index_value) if isinstance(index_value, tuple) else [index_value]
+        # prioritize last elements (e.g., (symbol, timestamp))
+        for candidate in reversed(candidates):
+            try:
+                if isinstance(candidate, datetime):
+                    return candidate
+                if isinstance(candidate, pd.Timestamp):
+                    return candidate.to_pydatetime()
+                if isinstance(candidate, np.datetime64):
+                    return pd.Timestamp(candidate).to_pydatetime()
+                if hasattr(candidate, "to_pydatetime"):
+                    return candidate.to_pydatetime()
+                return pd.to_datetime(candidate).to_pydatetime()
+            except Exception:
+                continue
+        self.Log(f"Pretraining skipped row: unable to coerce datetime from index value {index_value}")
+        return None
+
+    def _extract_symbol_from_index(self, index_value, fallback: Symbol | None = None) -> Symbol | None:
+        if isinstance(index_value, tuple) and index_value:
+            candidate = index_value[0]
+            if isinstance(candidate, Symbol):
+                return candidate
+        return fallback
+
     def _update_vwap(self, bar: TradeBar) -> None:
         self.vwap_volume += bar.Volume
         self.vwap_pv += bar.Close * bar.Volume
 
+    def _contract_symbol_for_date(self, target_date: datetime.date) -> Symbol | None:
+        if not self.future_chain_symbol:
+            return None
+        request_time = datetime.combine(target_date, time.min)
+        contracts = self.FutureChainProvider.GetFutureContractList(self.future_chain_symbol, request_time)
+        if not contracts:
+            return None
+        sorted_contracts = sorted(contracts, key=lambda s: s.ID.Date)
+        roll_cutoff = target_date + timedelta(days=self.ROLL_DAYS_BEFORE_EXPIRY)
+        for candidate in sorted_contracts:
+            expiry = candidate.ID.Date.date()
+            if expiry > roll_cutoff:
+                return candidate
+        return sorted_contracts[0]
+
+    def _build_rolling_history_dataframe(self) -> pd.DataFrame | None:
+        end_time = self.time
+        if end_time == datetime.min:
+            end_time = self.StartDate + timedelta(days=self.MIN_TRAIN_DAYS)
+        end_date = end_time.date()
+        start_date = end_date - timedelta(days=self.MIN_TRAIN_DAYS)
+        frames: list[pd.DataFrame] = []
+        days_collected = 0
+        current_date = start_date
+        max_iterations = self.MIN_TRAIN_DAYS + 10
+        while current_date <= end_date and max_iterations > 0 and days_collected < self.MIN_TRAIN_DAYS:
+            contract_symbol = self._contract_symbol_for_date(current_date)
+            day_start = datetime.combine(current_date, time.min)
+            day_end = min(day_start + timedelta(days=1), end_time)
+            if not contract_symbol or day_end <= day_start:
+                current_date += timedelta(days=1)
+                max_iterations -= 1
+                continue
+            history = self.History(contract_symbol, day_start, day_end, Resolution.MINUTE)
+            if history.empty:
+                current_date += timedelta(days=1)
+                max_iterations -= 1
+                continue
+            frames.append(history)
+            days_collected += 1
+            current_date += timedelta(days=1)
+            max_iterations -= 1
+        if days_collected < self.MIN_TRAIN_DAYS or not frames:
+            return None
+        df = pd.concat(frames).sort_index()
+        return df
+
     def _build_features(self, bar: TradeBar) -> list[float] | None:
         prev_close = self.price_history[-1] if self.price_history else None
         self.price_history.append(bar.Close)
+        self.volume_history.append(bar.Volume)
 
         if prev_close is None or prev_close <= 0:
             return None
@@ -282,6 +359,8 @@ class MesXGBoost(QCAlgorithm):
         ret_30m = self._lookback_return(30)
 
         rolling_vol, skew, kurt = self._moment_stats()
+
+        volume_norm, volume_z = self._volume_stats(bar.Volume)
 
         vwap = (self.vwap_pv / self.vwap_volume) if self.vwap_volume > 0 else bar.Close
         dist_vwap = (bar.Close - vwap) / vwap if vwap else 0.0
@@ -322,6 +401,8 @@ class MesXGBoost(QCAlgorithm):
             rsi_slope,
             atr_ratio,
             sar_distance,
+            volume_norm,
+            volume_z,
         ]
         features.extend(time_features)
         features.extend(thirty_min_features)
@@ -331,7 +412,8 @@ class MesXGBoost(QCAlgorithm):
         et = end_time.astimezone(pytz.timezone("America/New_York"))
         minutes_since_midnight = et.hour * 60 + et.minute
         cycle = 2 * np.pi * minutes_since_midnight / (24 * 60)
-        return [np.sin(cycle), np.cos(cycle)]
+        day_cycle = 2 * np.pi * et.weekday() / 7
+        return [np.sin(cycle), np.cos(cycle), np.sin(day_cycle), np.cos(day_cycle)]
 
     def _thirty_min_features(self) -> list[float]:
         vector: list[float] = []
@@ -374,6 +456,16 @@ class MesXGBoost(QCAlgorithm):
         skew = np.mean((centered / std) ** 3)
         kurt = np.mean((centered / std) ** 4) - 3.0
         return std, skew, kurt
+
+    def _volume_stats(self, current_volume: float) -> Tuple[float, float]:
+        if not self.volume_history:
+            return 1.0, 0.0
+        volumes = np.array(self.volume_history, dtype=float)
+        avg = np.mean(volumes)
+        std = np.std(volumes)
+        volume_norm = current_volume / avg if avg else 1.0
+        volume_z = (current_volume - avg) / std if std else 0.0
+        return volume_norm, volume_z
 
     def _normalized_range(self, price: float) -> Tuple[float, float]:
         if self.prev_day_high is None or self.prev_day_low is None:
@@ -444,7 +536,7 @@ class MesXGBoost(QCAlgorithm):
     def on_end_of_algorithm(self) -> None:
         self._remove_consolidators()
     def _process_primary_bar(self, bar: TradeBar, is_pretrain: bool = False) -> None:
-        if not is_pretrain and self.is_warming_up:
+        if not is_pretrain and self.IsWarmingUp:
             return
         self._reset_session_if_needed(bar.EndTime)
         self._update_vwap(bar)
