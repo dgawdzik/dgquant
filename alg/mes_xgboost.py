@@ -34,6 +34,11 @@ class MesXGBoost(QCAlgorithm):
     ROLL_DAYS_BEFORE_EXPIRY = 8  # switch to next contract this many days before expiry
 
     FLAT_ET = time(15, 58)       # force flat no later than 15:58 ET
+    TRADE_EXTENDED_HOURS = False  # trade outside NY RTH when True
+    REGULAR_MARKET_OPEN_ET = time(9, 30)
+    REGULAR_MARKET_CLOSE_ET = FLAT_ET
+    GLOBAL_CLOSE_START_ET = time(17, 0)  # CME daily maintenance window (all markets closed)
+    GLOBAL_CLOSE_END_ET = time(18, 0)
 
     def initialize(self) -> None:
         self.set_start_date(2025, 10, 1)
@@ -288,7 +293,18 @@ class MesXGBoost(QCAlgorithm):
         self.vwap_volume += bar.Volume
         self.vwap_pv += bar.Close * bar.Volume
 
-    def _contract_symbol_for_date(self, target_date: datetime.date) -> Symbol | None:
+    def _is_time_in_window(self, current: time, start: time, end: time) -> bool:
+        if start <= end:
+            return start <= current < end
+        return current >= start or current < end
+
+    def _is_regular_session(self, current: time) -> bool:
+        return self._is_time_in_window(current, self.REGULAR_MARKET_OPEN_ET, self.REGULAR_MARKET_CLOSE_ET)
+
+    def _is_global_market_closed(self, current: time) -> bool:
+        return self._is_time_in_window(current, self.GLOBAL_CLOSE_START_ET, self.GLOBAL_CLOSE_END_ET)
+
+    def _contract_symbol_for_date(self, target_date: date) -> Symbol | None:
         if not self.future_chain_symbol:
             return None
         request_time = datetime.combine(target_date, time.min)
@@ -505,10 +521,22 @@ class MesXGBoost(QCAlgorithm):
         if self.time < self.training_unlock_time:
             return
         ny_time = self.time.astimezone(pytz.timezone("America/New_York"))
-        if ny_time.time() >= self.FLAT_ET:
-            if self.Portfolio[self.contract_symbol].Invested:
-                self.Liquidate(self.contract_symbol, tag="EOD Flatten")
+        local_time = ny_time.time()
+
+        if self._is_global_market_closed(local_time):
+            if self.contract_symbol and self.Portfolio[self.contract_symbol].Invested:
+                self.Liquidate(self.contract_symbol, tag="Global session close")
             return
+
+        if not self.TRADE_EXTENDED_HOURS:
+            if local_time >= self.FLAT_ET:
+                if self.contract_symbol and self.Portfolio[self.contract_symbol].Invested:
+                    self.Liquidate(self.contract_symbol, tag="EOD Flatten")
+                return
+            if not self._is_regular_session(local_time):
+                if self.contract_symbol and self.Portfolio[self.contract_symbol].Invested:
+                    self.Liquidate(self.contract_symbol, tag="RTH only session close")
+                return
 
         holding = self.Portfolio[self.contract_symbol].Quantity
         target_qty = holding
