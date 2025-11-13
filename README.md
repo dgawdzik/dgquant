@@ -9,46 +9,45 @@ Install following software and note that dev environment setup was only tested o
 # Development Environment Setup
 
 - After cloning the repo, open in VSCode and run command `./dev init` to setup Lean Engine, write [.env](.env) file, and add settings to Lean Engine config file [~/.lean/config](~/.lean/config).
-- Activate Python virtual environment `conda activate ./.dgtrader-venv`
+- Activate Python virtual environment `conda activate ./.dgquant-venv`
 - Now you should be able to issue command `dev backtest` and can run `dev` CLI without the `./`.
-
 
 # Conda Environment
 
 The Conda virtual environment was created using:
 
 ```zsh
-conda create --prefix ./.dgtrader-venv python=3.10
+conda create --prefix ./.dgquant-venv python=3.10
 ```
 
 Note that Python 3.10 was chosen since `gym` library is not compatible with Python 3.11 or newer.
 
 ```zsh
-conda activate ./.dgtrader-venv
+conda activate ./.dgquant-venv
 conda config --add channels conda-forge # May not be needed if channel already added
 conda install ipykernel # Needed for Notebook support
 conda env export --no-builds > environment.yml
 # This is needed to get auto-complete working and needs to be in sync with the Lean engine Docker image
-pip install quantconnect-stubs==17290 
+pip install quantconnect-stubs==17290
 pip install quantconnect-lean==17290
 ```
 
 You can remove the environment by
 
 ```zsh
-conda remove -p ./.dgtrader-venv --all
+conda remove -p ./.dgquant-venv --all
 ```
 
 To activate
 
 ```zsh
-conda activate ./.dgtrader-venv
+conda activate ./.dgquant-venv
 ```
 
 To re-create
 
 ```zsh
-conda env create -f environment.yml -p ./.dgtrader-venv
+conda env create -f environment.yml -p ./.dgquant-venv
 ```
 
 To update environment file
@@ -124,7 +123,7 @@ dev clean
 
 Currently only `clean` option is supported that removes all backtests from [alg/backtests](alg/backtests/) folder.
 
-The `terminal.integrated.profiles.osx` in [.vscode/settings.json](.vscode/settings.json) is used to add the workspace root folder to `$PATH` so that [dev](dev) script can be executed. 
+The `terminal.integrated.profiles.osx` in [.vscode/settings.json](.vscode/settings.json) is used to add the workspace root folder to `$PATH` so that [dev](dev) script can be executed.
 
 The [.env](.env) file is to be created with the following OS env variables defined:
 

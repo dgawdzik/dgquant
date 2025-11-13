@@ -1,4 +1,4 @@
-name: .dgtrader-venv
+name: .dgquant-venv
 channels:
   - conda-forge
   - https://conda.anaconda.org/conda-forge
@@ -105,4 +105,4 @@ dependencies:
       - typing-inspection==0.4.0
       - tzdata==2025.2
       - urllib3==2.3.0
-prefix: .dgtrader-venv
+prefix: .dgquant-venv

@@ -1,6 +1,6 @@
 {
-    "engine-image": "quantconnect/lean:17034",
-    "research-image": "quantconnect/research:17034",
+    "engine-image": "quantconnect/lean:17371",
+    "research-image": "quantconnect/research:17371",
     "data-folder": "data",
     "log-handler": "QuantConnect.Logging.CompositeLogHandler",
     "messaging-handler": "QuantConnect.Messaging.Messaging",
@@ -592,7 +592,7 @@
     },
     "job-organization-id": "11dd0c00e332bcec91e2c3f6f88ca09d",
     "organization-id": "11dd0c00e332bcec91e2c3f6f88ca09d",
-    "file-database-last-update": "11/11/2025 16:43:38",
+    "file-database-last-update": "11/12/2025 20:19:57",
     "id": "Local",
     "data-downloader": "QuantConnect.DownloaderDataProvider.Launcher.Models.BrokerageDataDownloader",
     "data-downloader-brokerage": "CharlesSchwabBrokerage",
