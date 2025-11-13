@@ -1,6 +1,6 @@
 __pycache__/*
 alg/__pycache__/*
-.dgtrader-venv/*
+.dgquant-venv/*
 alg/backtests/*
 data/*
 .ipynb_checkpoints/*

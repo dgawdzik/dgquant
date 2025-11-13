@@ -47,13 +47,13 @@ init_environment() {
   echo -e "${GREEN}Initializing environment ...${NC}"
   eval "$(conda shell.bash hook)"
 
-  if [ -d ".dgtrader-venv" ]; then
-    read -p ".dgtrader-venv virtual env already exists and will be deleted and re-created. Do you want to proceed? (y/n): " choice
+  if [ -d ".dgquant-venv" ]; then
+    read -p ".dgquant-venv virtual env already exists and will be deleted and re-created. Do you want to proceed? (y/n): " choice
     case "$choice" in
       y|Y) 
         echo -e "${GREEN}Proceeding with initialization ...${NC}"
         echo -e "${GREEN}Deleting existing virtual environment ...${NC}"
-        conda remove -p ./.dgtrader-venv --all -y
+        conda remove -p ./.dgquant-venv --all -y
         ;;
       n|N) 
         echo -e "${GREEN}Initialization aborted.${NC}"; 
@@ -68,24 +68,24 @@ init_environment() {
 
   write_env_file_if_not_exists ".env"
 
-  echo -e "${GREEN}Creating virtual Python environment ./.dgtrader-venv ...${NC}"
-  conda env create -f environment.yml -p ./.dgtrader-venv
+  echo -e "${GREEN}Creating virtual Python environment ./.dgquant-venv ...${NC}"
+  conda env create -f environment.yml -p ./.dgquant-venv
   
   echo -e "${GREEN}Initializing Conda ...${NC}"
   conda init
   
   echo -e "${GREEN}Activating virtual environment to install packages from ./environment.yml ...${NC}"
-  conda activate ./.dgtrader-venv
+  conda activate ./.dgquant-venv
   
   echo -e "${GREEN}Installing Lean CLI ...${NC}"
   pip install lean
 
   echo -e "${GREEN}Setting Lean Engine configuration file to ensure consistent version of Lean engine and project type definition package see ~/.lean/config${NC}"
-  lean config set engine-image quantconnect/lean:17034
-  lean config set research-image quantconnect/research:17034
+  lean config set engine-image quantconnect/lean:17371
+  lean config set research-image quantconnect/research:17371
   
   echo ""
-  echo -e "${BLUE}Run 'conda activate ./.dgtrader-venv' to activate the virtual environment${NC}"; 
+  echo -e "${BLUE}Run 'conda activate ./.dgquant-venv' to activate the virtual environment${NC}"; 
   echo -e "${BLUE}If new .env file was created make sure to set environmental variables for Quant Connect auth${NC}"
    
 }

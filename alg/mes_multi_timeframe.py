@@ -36,10 +36,10 @@ class AlgMulti(QCAlgorithm):
         self.macd_30 = MovingAverageConvergenceDivergence(12, 26, 9, MovingAverageType.EXPONENTIAL)
         
         # Register consolidated data and attach indicators
-        self.consolidate(self.symbol, consolidator30)
-        self.register_indicator(self.symbol, consolidator30, self.ema23_30)
-        self.register_indicator(self.symbol, consolidator30, self.ema50_30)
-        self.register_indicator(self.symbol, consolidator30, self.macd_30)
+        self.subscription_manager.add_consolidator(self.contract_symbol, consolidator30)
+        self.register_indicator(self.contract_symbol, self.ema23_30, consolidator30, lambda bar: bar.Close)
+        self.register_indicator(self.contract_symbol, self.ema50_30, consolidator30, lambda bar: bar.Close)
+        self.register_indicator(self.contract_symbol, self.macd_30, consolidator30, lambda bar: bar.Close)
         
         # --- 5-minute consolidator & indicators ---
         consolidator5 = TradeBarConsolidator(timedelta(minutes=5))
@@ -48,10 +48,10 @@ class AlgMulti(QCAlgorithm):
         self.macd_5 = MovingAverageConvergenceDivergence(12, 26, 9, MovingAverageType.EXPONENTIAL)
         
         # Register consolidated data and attach indicators
-        self.consolidate(self.symbol, consolidator5)
-        self.register_indicator(self.symbol, consolidator5, self.ema23_5)
-        self.register_indicator(self.symbol, consolidator5, self.ema50_5)
-        self.register_indicator(self.symbol, consolidator5, self.macd_5)
+        self.subscription_manager.add_consolidator(self.contract_symbol, consolidator5)
+        self.register_indicator(self.contract_symbol, self.ema23_5, consolidator5, lambda bar: bar.Close)
+        self.register_indicator(self.contract_symbol, self.ema50_5, consolidator5, lambda bar: bar.Close)
+        self.register_indicator(self.contract_symbol, self.macd_5, consolidator5, lambda bar: bar.Close)
         
         # 4) indicators on the bound symbol
         self.ema23 = self.EMA(self.contract_symbol, 23, Resolution.MINUTE)
@@ -80,29 +80,50 @@ class AlgMulti(QCAlgorithm):
                 return
 
         self.bar_count += 1
-        ema10_val = self.ema23.current.value
-        ema30_val = self.ema50.current.value
+        ema_fast = self.ema23.Current.Value
+        ema_slow = self.ema50.Current.Value
+        ema5_fast = self.ema23_5.Current.Value
+        ema5_slow = self.ema50_5.Current.Value
+        ema30_fast = self.ema23_30.Current.Value
+        ema30_slow = self.ema50_30.Current.Value
+        macd5_hist = self.macd_5.Current.Value - self.macd_5.Signal.Current.Value
+        macd30_hist = self.macd_30.Current.Value - self.macd_30.Signal.Current.Value
 
-        self.plot("EMA", "10", ema10_val)
-        self.plot("EMA", "30", ema30_val)
+        self.plot("EMA", "1m Fast", ema_fast)
+        self.plot("EMA", "1m Slow", ema_slow)
+        self.plot("EMA", "5m Fast", ema5_fast)
+        self.plot("EMA", "5m Slow", ema5_slow)
+        self.plot("EMA", "30m Fast", ema30_fast)
+        self.plot("EMA", "30m Slow", ema30_slow)
         
-        # 5) Go long on EMA23 > EMA50
-        if not self.is_long and ema10_val > ema30_val:
+        long_ready = (ema_fast > ema_slow and
+                      ema5_fast > ema5_slow and
+                      ema30_fast > ema30_slow and
+                      macd5_hist > 0 and
+                      macd30_hist > 0)
+        short_ready = (ema_fast < ema_slow and
+                       ema5_fast < ema5_slow and
+                       ema30_fast < ema30_slow and
+                       macd5_hist < 0 and
+                       macd30_hist < 0)
+
+        # 5) Go long when all timeframes confirm uptrend
+        if not self.is_long and long_ready:
             if self.portfolio[self.contract_symbol].invested:
                 self.liquidate(self.contract_symbol)
-                self.debug(f"Cover @ {self.time}  EMA10 {ema10_val:.2f} > EMA30 {ema30_val:.2f}")
+                self.debug(f"Cover @ {self.time}  EMA(1m) {ema_fast:.2f}>{ema_slow:.2f}")
             self.set_holdings(self.contract_symbol, 1)
-            self.debug(f"Long @ {self.time}  EMA10 {ema10_val:.2f} > EMA30 {ema30_val:.2f}")
+            self.debug(f"Long @ {self.time} confirmed by 1m/5m/30m EMA+MACD alignment")
             self.is_long = True
             self.is_short = False
 
-        # 6) Flip to short on EMA10 < EMA30
-        elif not self.is_short and ema10_val < ema30_val:
+        # 6) Flip to short when multi-timeframe trend turns down
+        elif not self.is_short and short_ready:
             if self.portfolio[self.contract_symbol].invested:
                 self.liquidate(self.contract_symbol)
-                self.debug(f"Exit Long @ {self.time}  EMA10 {ema10_val:.2f} < EMA30 {ema30_val:.2f}")
+                self.debug(f"Exit Long @ {self.time}  EMA(1m) {ema_fast:.2f}<{ema_slow:.2f}")
             self.set_holdings(self.contract_symbol, -1)
-            self.debug(f"Short @ {self.time}  EMA10 {ema10_val:.2f} < EMA30 {ema30_val:.2f}")
+            self.debug("Short @ {} confirmed by 1m/5m/30m EMA+MACD alignment".format(self.time))
             self.is_long = False
             self.is_short = True
 
